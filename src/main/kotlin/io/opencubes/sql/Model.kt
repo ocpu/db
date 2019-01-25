@@ -51,11 +51,6 @@ abstract class Model {
     this.table = table
   }
 
-  constructor(connection: Connection, table: String) {
-    this.db = Database(connection)
-    this.table = table
-  }
-
   /**
    * All indices in the model.
    */
@@ -539,13 +534,4 @@ abstract class Model {
   @Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
   @MustBeDocumented
   annotation class Auto
-
-  /**
-   * If the property name and the name in the database differs
-   * use this annotation to specify what it is.
-   */
-  @Retention(AnnotationRetention.RUNTIME)
-  @Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
-  @MustBeDocumented
-  annotation class SerializedName(val value: String)
 }
