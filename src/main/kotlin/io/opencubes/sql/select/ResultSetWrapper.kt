@@ -1,12 +1,12 @@
 package io.opencubes.sql.select
 
-import io.opencubes.sql.ActiveRecord
-import io.opencubes.sql.IInjectable
-import io.opencubes.sql.SerializedName
+import io.opencubes.sql.*
 import java.sql.ResultSet
+import java.sql.Statement
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KMutableProperty
-import kotlin.reflect.full.memberProperties
+import kotlin.reflect.KProperty
+import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.jvm.isAccessible
 import kotlin.reflect.jvm.javaField
 
@@ -15,12 +15,12 @@ import kotlin.reflect.jvm.javaField
  *
  * @param resultSet The initial result set.
  */
-class ResultSetWrapper(val resultSet: ResultSet) : Iterator<ResultSetWrapper>, AutoCloseable {
+class ResultSetWrapper(val resultSet: ResultSet?, val stmt: Statement, val database: Database) : Iterator<ResultSetWrapper>, AutoCloseable {
   /**
    * The column names in this result set.
    */
   val columns: List<String> by lazy {
-    val meta = resultSet.metaData
+    val meta = resultSet?.metaData ?: return@lazy emptyList<String>()
     val columnCount = meta.columnCount
 
     List(columnCount) {
@@ -28,12 +28,22 @@ class ResultSetWrapper(val resultSet: ResultSet) : Iterator<ResultSetWrapper>, A
     }
   }
 
-  val closed get() = resultSet.isClosed
-  val currentRow get() = resultSet.row
+  /**
+   * Is the result set closed.
+   */
+  val closed get() = resultSet?.isClosed == true
+  /**
+   * The index of the current row.
+   */
+  val currentRow get() = resultSet?.row ?: 0
+  /**
+   * The generated keys as a result of the query.
+   */
+  val generatedKeys by lazy { ResultSetWrapper(stmt.generatedKeys, stmt, database) }
 
   private var lastNext = true
 
-  override fun close() = resultSet.close()
+  override fun close() = resultSet?.close() ?: Unit
 
   /**
    * Go to the next result row.
@@ -43,21 +53,39 @@ class ResultSetWrapper(val resultSet: ResultSet) : Iterator<ResultSetWrapper>, A
   /**
    * Test if there are more rows.
    */
-  override fun hasNext() = !resultSet.isClosed && !resultSet.isAfterLast && resultSet.next()
+  override fun hasNext() = !closed && resultSet?.isAfterLast == false && resultSet.next()
 
   /**
    * Get a column value based on a name.
    *
    * @param columnName The column name.
    */
-  operator fun get(columnName: String): Any? = resultSet.getObject(columnName)
+  operator fun get(columnName: String): Any? =
+    if (resultSet != null) {
+      if (resultSet.isBeforeFirst)
+        resultSet.next()
+      val res = resultSet.getObject(columnName)
+      if (res is ByteArray && database.isSQLite)
+        database.createBlob(res)
+        else res
+    }
+    else throw Exception("No row found")
 
   /**
    * Get a column value based on column index.
    *
    * @param columnIndex The column index.
    */
-  operator fun get(columnIndex: Int): Any? = resultSet.getObject(columnIndex - 1)
+  operator fun get(columnIndex: Int): Any? =
+    if (resultSet != null) {
+      if (resultSet.isBeforeFirst)
+        resultSet.next()
+      val res = resultSet.getObject(columnIndex + 1)
+      if (res is ByteArray && database.isSQLite)
+        database.createBlob(res)
+      else res
+    }
+    else throw Exception("No row found")
 
   /** Get the 0 column index value */
   operator fun component1() = get(0)
@@ -86,12 +114,20 @@ class ResultSetWrapper(val resultSet: ResultSet) : Iterator<ResultSetWrapper>, A
   /** Get the 8 column index value */
   operator fun component9() = get(8)
 
+  /**
+   * Injects the values in the result into a object that has the same column name.
+   * The name used can be influenced by the [SerializedName] annotation. Delegated
+   * value setters are preferred. Delegated properties that implements the
+   * [IInjectable] interface can be used to better control the value injected. Enum
+   * values are supported.
+   */
   fun <T: Any> inject(instance: T): T {
-    instance::class.memberProperties
+    instance::class.declaredMemberProperties
       .asSequence()
-      .filter { ActiveRecord.getAsName(it) in columns }
+      .filter { Field.getName(it) in columns }
+      .filterIsInstance<KProperty<*>>()
       .forEach { prop ->
-        val name = ActiveRecord.getAsName(prop)
+        val name = Field.getName(prop)
         val a = prop.isAccessible
         if (!a) prop.isAccessible = true
 
@@ -126,5 +162,12 @@ class ResultSetWrapper(val resultSet: ResultSet) : Iterator<ResultSetWrapper>, A
         if (!a) prop.isAccessible = false
       }
     return instance
+  }
+
+  fun <R> map(transformer: (row: ResultSetWrapper) -> R): List<R> {
+    val res = mutableListOf<R>()
+    for (row in this)
+      res.add(transformer(row))
+    return res.toList()
   }
 }

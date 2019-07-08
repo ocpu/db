@@ -11,8 +11,6 @@ import java.util.*
 /**
  * A super powered database connection that emphasises ease of
  * use with powerful SQL server agnostic functions.
- *
- * @author Martin Hövre
  */
 class Database {
   /**
@@ -21,8 +19,7 @@ class Database {
    * @param dsn The database url.
    */
   constructor(dsn: String) {
-    this.dsn = dsn
-    connection = createConnection(dsn)
+    this.connection = createConnection(dsn)
   }
 
   /**
@@ -34,14 +31,17 @@ class Database {
    * @param password The password for the user.
    */
   constructor(dsn: String, user: String, password: String) {
-    this.dsn = dsn
-    connection = createConnection(dsn, user, password)
+    this.connection = createConnection(dsn, user, password)
   }
 
   /**
-   * The dsn used to create the connection.
+   * Create a instance from a already existing connection.
+   *
+   * @param connection The connection to use.
    */
-  val dsn: String
+  constructor(connection: Connection) {
+    this.connection = connection
+  }
 
   /**
    * The raw connection to the database.
@@ -53,7 +53,7 @@ class Database {
    */
   val catalogs: List<String>
     get() =
-      if (dialect.startsWith("sqlite")) listOf("main")
+      if (isSQLite) listOf("main")
       else executeToList("SHOW DATABASES") {
         it[0] as String
       }
@@ -64,30 +64,53 @@ class Database {
    * catalog/schema.
    */
   var catalog: String
-    get() = connection.catalog
+    get() = if (isSQLite) "main" else connection.catalog
     set(value) {
-      connection.catalog = value
+      if (!isSQLite)
+        connection.catalog = value
     }
-
-  /**
-   * Get the dialect of the connection
-   */
-  val dialect get() = dsn.split(':', limit = 2)[0].toLowerCase()
 
   /**
    * Sets the [Database.global] database to this one and returns
    * the same connection.
    */
-  val asGlobal: Database get() {
-    Database.global = this
-    return this
-  }
+  val asGlobal: Database
+    get() {
+      global = this
+      return this
+    }
+
+  val isSQLite: Boolean
+    get() = try {
+      Class.forName("org.sqlite.SQLiteConnection")
+        .isInstance(connection)
+    } catch (_: Throwable) {
+      false
+    }
+
+  val isMySQL: Boolean
+    get() = try {
+      Class.forName("com.mysql.cj.jdbc.ConnectionImpl")
+        .isInstance(connection)
+    } catch (_: Throwable) {
+      false
+    }
+
+  val isSQLServer: Boolean
+    get() = try {
+      Class.forName("com.microsoft.sqlserver.jdbc.SQLServerConnection")
+        .isInstance(connection)
+    } catch (_: Throwable) {
+      false
+    }
 
   /**
    * Executes a SQL query to the database.
    *
    * This function returns a [ResultSet] wrapped in a [Optional] just to easily see
    * if there was anything returned from the SQL query.
+   *
+   * **Attention**: SQLite only supports single query statements
    *
    * @param sql The SQL query to execute.
    * @param params The params that corresponds to the '?' in the [sql] query.
@@ -98,29 +121,40 @@ class Database {
   @Throws(DatabaseException::class)
   fun execute(@Language("sql") sql: String, vararg params: Any?): Optional<ResultSetWrapper> {
     val stmt = try {
-      connection.prepareStatement(sql)
+      connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)
     } catch (e: SQLException) {
       throw DatabaseException(e, sql)
     }
+    stmtToSQL[stmt] = sql
     return execute(stmt, *params)
   }
+
+  private val stmtToSQL = WeakHashMap<PreparedStatement, String>()
 
   /**
    * Execute a [PreparedStatement] with the specified [params] to the statement
    * and get the [ResultSetWrapper] representing the result of the operation.
    */
   fun execute(stmt: PreparedStatement, vararg params: Any?): Optional<ResultSetWrapper> {
-    for ((i, param) in params.withIndex()) stmt.setObject(
-      i + 1,
-      if (param !is Enum<*>) param else getEnumName(param)
-    )
+    for ((i, param) in params.withIndex()) {
+      val o = if (param !is Enum<*>) param else getEnumName(param)
+      if (o is Blob && isSQLite)
+        stmt.setBytes(i + 1, o.getBytes(1, o.length().toInt()))
+      else if (o is Enum<*> && isSQLite)
+        stmt.setInt(i + 1, o.ordinal)
+      else stmt.setObject(i + 1, o)
+    }
 
-    return if (stmt.execute()) {
-      val res = stmt.resultSet
-      if (res.isAfterLast)
-        return Optional.empty()
-      return Optional.of(ResultSetWrapper(res))
-    } else Optional.empty()
+    try {
+      return if (stmt.execute()) {
+        val res = stmt.resultSet
+        if (res.isAfterLast)
+          return Optional.empty()
+        return Optional.of(ResultSetWrapper(res, stmt, this))
+      } else Optional.of(ResultSetWrapper(stmt.resultSet, stmt, this))
+    } catch (e: SQLException) {
+      throw DatabaseException(e, stmtToSQL[stmt] ?: "<unknown>")
+    }
   }
 
   /**
@@ -167,7 +201,12 @@ class Database {
   /**
    * Creates a new [Blob].
    */
-  fun createBlob(): Blob = connection.createBlob()
+  fun createBlob(): Blob = try {
+    connection.createBlob()
+  } catch (e: SQLException) {
+    if (isSQLite) SimpleBlob()
+    else throw e
+  }
 
   /**
    * Creates a new [Clob].
@@ -177,18 +216,18 @@ class Database {
   /**
    * Creates a new [Blob] with [bytes].
    */
-  fun createBlob(bytes: ByteArray): Blob = connection.createBlob().also { it.setBytes(0, bytes) }
+  fun createBlob(bytes: ByteArray): Blob = createBlob().also { it.setBytes(1, bytes) }
 
   /**
    * Creates a new [Clob] with [str].
    */
-  fun createClob(str: String): Clob = connection.createClob().also { it.setString(0, str) }
+  fun createClob(str: String): Clob = connection.createClob().also { it.setString(1, str) }
 
   /**
    * Creates a new [Blob] with the [builder].
    */
   fun createBlob(size: Int, builder: ByteBuffer.() -> Unit): Blob =
-    connection.createBlob().also { it.setBytes(0, ByteBuffer.allocate(size).apply(builder).array()) }
+    createBlob().also { it.setBytes(1, ByteBuffer.allocate(size).apply(builder).array()) }
 
   /**
    * Creates a new [Clob] with the [builder].
@@ -233,53 +272,46 @@ class Database {
   }
 
   /**
-   * Get the last inserted id.
-   */
-  fun lastInsertId(): Int = execute("SELECT LAST_INSERT_ID() id").useIfPresent {
-    it["id"] as Int
-  } ?: -1
-
-  /**
    * Insert into the [table] and set the [columns] to these [values].
    */
-  fun insertInto(table: String, columns: Array<String>, values: Array<out Any?>) {
+  fun insertInto(table: String, columns: Array<String>, values: Array<out Any?>): Optional<ResultSetWrapper> {
     val columnNames = columns.joinToString(transform = ::escape)
     val insertPoints = values.joinToString { "?" }
-    execute("INSERT INTO $table ($columnNames) VALUES ($insertPoints)", *values)
+    return execute("INSERT INTO $table ($columnNames) VALUES ($insertPoints)", *values)
   }
 
   /**
    * Insert into the [table] and set the [columns] to these [values].
    */
-  fun insertInto(table: String, columns: List<String>, values: List<Any?>) {
+  fun insertInto(table: String, columns: List<String>, values: List<Any?>): Optional<ResultSetWrapper> {
     val columnNames = columns.joinToString(transform = ::escape)
     val insertPoints = values.joinToString { "?" }
-    execute("INSERT INTO $table ($columnNames) VALUES ($insertPoints)", *values.toTypedArray())
+    return execute("INSERT INTO $table ($columnNames) VALUES ($insertPoints)", *values.toTypedArray())
   }
 
   /**
    * Delete from the [table] where these [columns] have these [values].
    */
-  fun deleteFrom(table: String, columns: List<String>, values: List<Any?>) {
+  fun deleteFrom(table: String, columns: List<String>, values: List<Any?>): Optional<ResultSetWrapper> {
     val preparedColumns = columns.joinToString(" AND ", transform = ::prepare)
-    execute("DELETE FROM $table WHERE $preparedColumns", *values.toTypedArray())
+    return execute("DELETE FROM $table WHERE $preparedColumns", *values.toTypedArray())
   }
 
   /**
    * Delete from the [table] where these [columns] have these [values].
    */
-  fun deleteFrom(table: String, columns: Array<String>, values: Array<Any?>) {
+  fun deleteFrom(table: String, columns: Array<String>, values: Array<Any?>): Optional<ResultSetWrapper> {
     val preparedColumns = columns.joinToString(" AND ", transform = ::prepare)
-    execute("DELETE FROM $table WHERE $preparedColumns", *values)
+    return execute("DELETE FROM $table WHERE $preparedColumns", *values)
   }
 
   /**
    * Update the a [table] row where [whereColumns] and set these [columns] with these [values].
    */
-  fun update(table: String, columns: List<String>, whereColumns: List<String>, values: List<Any?>) {
+  fun update(table: String, columns: List<String>, whereColumns: List<String>, values: List<Any?>): Optional<ResultSetWrapper> {
     val preparedWhereColumns = whereColumns.joinToString(" AND ", transform = ::prepare)
     val preparedColumns = columns.joinToString(transform = ::prepare)
-    execute("UPDATE $table SET $preparedColumns WHERE $preparedWhereColumns", *values.toTypedArray())
+    return execute("UPDATE $table SET $preparedColumns WHERE $preparedWhereColumns", *values.toTypedArray())
   }
 
   /**
@@ -313,6 +345,23 @@ class Database {
       e.name
     }
 
+    private fun fixDSN(dsn: String): String {
+      return "jdbc:" + when {
+        dsn.startsWith("mysql") -> {
+          val unicode = if ("useUnicode" in dsn) "" else "&useUnicode=true"
+          val jdbcTimeZone = if ("useJDBCCompliantTimezoneShift" in dsn) "" else "&useJDBCCompliantTimezoneShift=true"
+          val serverTimezone = if ("serverTimezone" in dsn) "" else "&serverTimezone=UTC"
+
+          val fix =
+            if ("?" in dsn) "$unicode$jdbcTimeZone$serverTimezone"
+            else "?" + ("$unicode$jdbcTimeZone$serverTimezone".drop(1))
+
+          "$dsn$fix"
+        }
+        else -> dsn
+      }
+    }
+
     /**
      * Creates a connection to the desired database.
      *
@@ -324,7 +373,7 @@ class Database {
      * @return The connection to the database.
      */
     @JvmStatic
-    fun createConnection(dsn: String) = DriverManager.getConnection("jdbc:$dsn")!!
+    fun createConnection(dsn: String) = DriverManager.getConnection(fixDSN(dsn))!!
 
     /**
      * Creates a connection to the desired database with a [user]name and [password].
@@ -339,33 +388,47 @@ class Database {
      */
     @JvmStatic
     fun createConnection(dsn: String, user: String, password: String) =
-      DriverManager.getConnection("jdbc:$dsn", user, password)!!
+      DriverManager.getConnection(fixDSN(dsn), user, password)!!
 
     /**
      * The global database connection. Can be used by a [ActiveRecord] model
      * when not specifying the connection to use when constructing objects.
      */
     var global: Database? = null
+
+    fun transaction(database: Database? = global, action: () -> Unit) {
+      if (database == null)
+        throw IllegalStateException("The database to use for the transaction is null")
+      database.transaction(action)
+    }
+
+    fun execute(@Language("sql") sql: String, vararg params: Any, database: Database? = global): Optional<ResultSetWrapper> {
+      if (database == null)
+        throw IllegalStateException("The database to use for the transaction is null")
+      return database.execute(sql, *params)
+    }
   }
 
-  /**
-   * Get the current timestamp.
-   *
-   * Can be used with [ActiveRecord.value] to provide a default value.
-   */
-  class CurrentTimestamp : Timestamp(java.util.Calendar.getInstance().time.time)
+  object Current {
+    /**
+     * Get the current timestamp.
+     *
+     * Can be used with [ActiveRecord.value] to provide a default value.
+     */
+    fun timestamp() = Timestamp(java.util.Calendar.getInstance().time.time)
 
-  /**
-   * Get the current date.
-   *
-   * Can be used with [ActiveRecord.value] to provide a default value.
-   */
-  class CurrentDate : Date(java.util.Calendar.getInstance().time.time)
+    /**
+     * Get the current date.
+     *
+     * Can be used with [ActiveRecord.value] to provide a default value.
+     */
+    fun date() = Date(java.util.Calendar.getInstance().time.time)
 
-  /**
-   * Get the current time.
-   *
-   * Can be used with [ActiveRecord.value] to provide a default value.
-   */
-  class CurrentTime : Time(java.util.Calendar.getInstance().time.time)
+    /**
+     * Get the current time.
+     *
+     * Can be used with [ActiveRecord.value] to provide a default value.
+     */
+    fun time() = Time(java.util.Calendar.getInstance().time.time)
+  }
 }

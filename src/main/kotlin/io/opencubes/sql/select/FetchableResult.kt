@@ -1,16 +1,11 @@
 package io.opencubes.sql.select
 
 import io.opencubes.sql.ActiveRecord
-import io.opencubes.sql.IInjectable
 import io.opencubes.sql.SerializedName
 import io.opencubes.sql.useIfPresent
 import java.util.*
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KClass
-import kotlin.reflect.KMutableProperty
-import kotlin.reflect.full.memberProperties
-import kotlin.reflect.jvm.isAccessible
-import kotlin.reflect.jvm.javaField
 
 /**
  * This is a wrapper to make it easier to integrate the result into a instance or such.
@@ -74,8 +69,8 @@ class FetchableResult(val resultSet: Optional<ResultSetWrapper>) {
   /**
    * Fetch the result into a [model] of a active record.
    */
-  fun <M : ActiveRecord> fetchInto(model: KClass<M>): M? =
-    if (resultSet.isPresent) fetchInto(ActiveRecord.getInjectableInstance(model))
+  fun <AR : ActiveRecord> fetchInto(model: KClass<AR>): AR? =
+    if (resultSet.isPresent) fetchInto(ActiveRecord.getShallowInstance(model))
     else null
 
   /**
@@ -86,8 +81,8 @@ class FetchableResult(val resultSet: Optional<ResultSetWrapper>) {
   /**
    * Fetch the result into a list of [model] that is a active record.
    */
-  fun <M : ActiveRecord> fetchAllInto(model: KClass<M>): List<M> =
-    if (resultSet.isPresent) fetchAll { it.inject(ActiveRecord.getInjectableInstance(model)) }
+  fun <AR : ActiveRecord> fetchAllInto(model: KClass<AR>): List<AR> =
+    if (resultSet.isPresent) fetchAll { it.inject(ActiveRecord.getShallowInstance(model)) }
     else emptyList()
 
   /**

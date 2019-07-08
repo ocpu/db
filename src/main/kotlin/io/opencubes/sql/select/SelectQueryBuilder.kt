@@ -4,7 +4,7 @@ import io.opencubes.sql.Database
 import io.opencubes.sql.Database.Companion.escape
 import io.opencubes.sql.Database.Companion.prepare
 
-/**
+/**FIXME Look over and see if correct usages and stuff.
  * A query builder.
  *
  * @param db The database connection to use.
@@ -160,8 +160,6 @@ class SelectQueryBuilder(private val db: Database, columns: Array<out String>) {
     if (!this::fromTable.isInitialized)
       throw Exception()
 
-    val dialect = db.dialect
-
     return buildString {
       append("SELECT ")
       for ((i, column) in columns.withIndex()) {
@@ -174,9 +172,10 @@ class SelectQueryBuilder(private val db: Database, columns: Array<out String>) {
       append(" FROM $fromTable ")
       for ((type, table, condition) in joins) {
         append(when (type) {
+          // TODO More join types
           JoinType.INNER -> "INNER JOIN"
           JoinType.LEFT -> "LEFT JOIN"
-          JoinType.RIGHT -> if (dialect.startsWith("sqlite")) "JOIN" else "RIGHT JOIN"
+          JoinType.RIGHT -> if (db.isSQLite) "JOIN" else "RIGHT JOIN"
           else -> ""
         })
         append(" $table ON $condition ")
