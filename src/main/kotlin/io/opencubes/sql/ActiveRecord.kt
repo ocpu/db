@@ -1,23 +1,21 @@
+@file:Suppress("unused")
+
 package io.opencubes.sql
 
-import io.opencubes.sql.select.CompiledSelectQuery
-import io.opencubes.sql.select.Order
-import io.opencubes.sql.select.SelectQueryBuilder
-import java.io.InvalidClassException
-import java.sql.Date
-import java.sql.SQLException
-import java.sql.Time
-import java.sql.Timestamp
-import java.text.SimpleDateFormat
+import io.opencubes.sql.delegates.*
+import io.opencubes.sql.table.AbstractForeignKey
+import io.opencubes.sql.table.AbstractTable
+import io.opencubes.sql.table.AbstractTableIndex
 import java.util.*
-import kotlin.properties.ReadOnlyProperty
-import kotlin.properties.ReadWriteProperty
-import kotlin.reflect.*
-import kotlin.reflect.full.*
-import kotlin.reflect.jvm.isAccessible
+import kotlin.reflect.KClass
+import kotlin.reflect.KProperty
+import kotlin.reflect.KProperty0
+import kotlin.reflect.KProperty1
+import kotlin.reflect.full.declaredMembers
+import kotlin.reflect.full.isSubclassOf
+import kotlin.reflect.full.memberProperties
+import kotlin.reflect.full.primaryConstructor
 import kotlin.reflect.jvm.javaField
-import kotlin.reflect.jvm.jvmErasure
-import kotlin.reflect.jvm.kotlinProperty
 
 /**
  * This is a implementation of the [Active Record Pattern](https://en.wikipedia.org/wiki/Active_record_pattern)
@@ -63,150 +61,128 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    */
   constructor() : this(null, null)
 
-  /**
-   * All indices in the model.
-   */
-  val indices by lazy {
-    this::class.memberProperties.asSequence()
-      .filter { PropertyWithType::class.java.isAssignableFrom(it.javaField?.type) }
-      .filter { it.findAnnotation<Volatile>() == null }
-      .filter { it.findAnnotation<Exclude>() == null }
-      .filter { it !is KMutableProperty<*> || it.findAnnotation<Index>() != null }
-      .toList()
-  }
+  @Transient
+  open val metadata: Metadata? = null
 
   /**
    * All fields in the model excluding indices.
    */
+  @Suppress("UNCHECKED_CAST")
   val fields by lazy {
-    this::class.memberProperties.asSequence()
-      .filter { PropertyWithType::class.java.isAssignableFrom(it.javaField?.type) }
-      .filter { it.findAnnotation<Volatile>() == null }
-      .filter { it.findAnnotation<Exclude>() == null }
-      .filter { it.findAnnotation<Index>() == null }
-      .filter { it.findAnnotation<Field>() ?: it is KMutableProperty<*> }
+    this::class.declaredMembers
+      .asSequence()
+      .filterIsInstance<KProperty<*>>()
+      .filter { it.javaField?.type?.kotlin?.isSubclassOf(IPropertyWithType::class) == true }
+      .map(::Field)
+      .sortedBy { it.property.name }
+      .sortedBy {
+        when (it.getDelegate(this)) {
+          is DBReference<*>, is DBReferenceNull<*> -> false
+          else -> true
+        }
+      }
+      .sortedBy {
+        metadata?.digest?.primaryKeys?.contains(it.property) == false && it.property.name != "id"
+      }
       .toList()
   }
 
-  val primaryKeyProperty: KProperty<*> by lazy {
-    this::class.memberProperties.find { it.javaField?.type?.name == "io.opencubes.sql.ActiveRecord\$DBPrimaryKey" }
-      ?: throw Exception(
-        "The ${this::class.java.simpleName} ($table) model needs to have one primary key like: val id by primaryKey()"
-      )
+  val idField: Field by lazy {
+    fields.find {
+      metadata?.digest?.primaryKeys?.contains(it.property) == true
+    } ?: fields.find {
+      it.property.name == "id"
+    } ?: throw IllegalStateException(
+      "The  table does not have an id column. Make a property the primary key or create a property with the name `id`"
+    )
   }
+
+  // --------------------------------------------- Active Record functions ---------------------------------------------
 
   /**
    * Save the current state of the object to the database. Whether it is to
    * update the existing entry or create a new one.
    */
-  open fun save() {
-    val filteredIds = indices.filter(::hasValue)
-
-    if (filteredIds.size == indices.size) {
+  open fun save(vararg assignments: Pair<KProperty1<out ActiveRecord, Any?>, Any?>) {
+    for ((property, value) in assignments) {
+      val field = Field(property)
+      if (field.table != table)
+        continue
+      field.setValue(this, value)
+    }
+    if (idField.hasValue(this)) {
       // Update row
-      val valueFields = fields.filter(::hasValue)
-      if (database
-          .select(*getAsNames(indices + fields).toTypedArray())
-          .from(table)
-          .where(getAsNames(indices))
-          .execute(valueFields.map(::getValue))
-          .hasResult) {
-        try {
-          database.update(
-            table = table,
-            columns = getAsNames(valueFields),
-            whereColumns = getAsNames(indices),
-            values = (valueFields + indices).map(::getValue)
-          )
-          return
-        } catch (_: NoSuchElementException) {
-          // There was no element to update so lets create it.
-          // (Fallthrough to create stage)
-        }
+      val valueFields = Field.hasValue(this, fields - idField)
+      try {
+        database.update(
+          table = table,
+          columns = valueFields.map(Field::name),
+          whereColumns = listOf(idField.name),
+          values = Field.values(this, valueFields + idField)
+        )
+        return
+      } catch (_: NoSuchElementException) {
+        // There was no element to update so lets create it.
+        // (Fallthrough to create stage)
       }
     }
     // Create row
-    val keys = filteredIds + fields.filter(::hasValue)
-    database.insertInto(table, getAsNames(keys), keys.map(::getValue))
-    // Apply any unforeseen changes by the database
-    val filteredFields = (indices + fields).filter(::hasValue)
-    database
-      .select(*getAsNames(indices + fields).toTypedArray())
-      .from(table)
-      .where(getAsNames(filteredFields))
-      .execute(filteredFields.map(::getValue))
-      .fetchInto(this)
+    val keys = Field.hasValue(this, fields)
+    val res = database.insertInto(table, keys.map(Field::name), Field.values(this, keys))
+    (idField.getDelegate(this) as IInjectable).inject(res.get().generatedKeys[0])
   }
 
   /**
    * Remove current entry from the database.
    */
-  open fun delete() = database.deleteFrom(table, indices.map(::getAsName), indices.map(::getValue))
+  open fun delete() {
+    database.deleteFrom(table, listOf(idField.name), listOf(idField.getValue(this)))
+  }
 
-  private fun getValue(property: KProperty<*>) = property.getter.accessible { call(this@ActiveRecord) }
-
-  /**
-   * Checks if the property has a value.
-   */
-  private fun hasValue(property: KProperty<*>) =
-    try {
-      property.getter.call(this)
-      true
-    } catch (_: Exception) {
-      false
-    }
+  protected fun <R : Any?> KProperty0<R>.set(value: R) {
+    val field = Field(this)
+    field.setValue(this@ActiveRecord, value)
+  }
 
   companion object {
+    // ------------------------------------------- Name resolution functions -------------------------------------------
 
     private val tableCache = mutableMapOf<KClass<*>, String>()
-    private val nameCache = mutableMapOf<KProperty<*>, String>()
-
-    @Suppress("UNCHECKED_CAST")
-    private fun resolveName(property: KProperty<*>): String {
-      val name = property.findAnnotation<SerializedName>()?.value
-      if (name != null) return name
-
-      val instance = ActiveRecord.getInjectableInstance(property.javaField!!.declaringClass!!.kotlin as KClass<out ActiveRecord>)
-      return when (val delegate = property.javaField?.accessible { get(instance) }) {
-        is DBReference<*> -> "${property.name}_${getAsName(delegate.primaryKey)}"
-        is DBReferenceNull<*> -> "${property.name}_${getAsName(delegate.primaryKey)}"
-        else -> Regex("([a-z])([A-Z])").replace(property.name) { res ->
-          val (fc, nc) = res.destructured
-          "${fc}_$nc"
-        }.toLowerCase()
-      }
-    }
+    private const val vowels = "aouåeiyäö"
 
     private fun resolveTable(klass: KClass<*>): String {
-      val name = Regex("([a-z])([A-Z])").replace(klass.java.simpleName) { res ->
-        val (fc, nc) = res.destructured
-        "${fc}_$nc"
-      }.toLowerCase()
+      val name = klass.java.simpleName.toSnakeCase()
       return if (
         name.endsWith("ss") || name.endsWith("s") ||
-        name.endsWith("sh") || name.endsWith("x") ||
-        name.endsWith("z")
+        name.endsWith("sh") || name.endsWith("ch") ||
+        name.endsWith("x") || name.endsWith("z")
       ) "${name}es"
+      else if (name.endsWith("f")) "${name.substring(0, name.lastIndex)}ves"
+      else if (name.endsWith("fe")) "${name.substring(0, name.lastIndex - 1)}ves"
+      else if (name.length > 1 && name[name.length - 1] == 'y' && name[name.length - 2] !in vowels)
+        "${name.substring(0, name.lastIndex)}ies"
       else "${name}s"
     }
 
-    /**
-     * Converts a property name into a database name.
-     */
-    fun getAsName(property: KProperty<*>): String = nameCache.computeIfAbsent(property, ::resolveName)
+    fun getLinkTableName(table: String?, property: KProperty<*>, first: ActiveRecord, second: ActiveRecord): String {
+      return when {
+        table != null -> table
+        first.table == property.name || second.table == property.name -> {
+          val (f, l) = listOf(first, second).sortedBy(ActiveRecord::table)
 
-    /**
-     * Converts a whole list of properties into database names
-     */
-    fun getAsNames(list: List<KProperty<*>>) = list.map(::getAsName)
+          "${f::class.java.simpleName.toSnakeCase()}_${l.table}"
+        }
+        else -> property.name.toSnakeCase()
+      }
+    }
 
-    // ----------------------------- Instance creations --------------------------------------
+    // ------------------------------------------ Instance creations ---------------------------------------------------
 
     /**
      * This function will create a instance of the specified [kClass].
      */
     @JvmStatic
-    fun <AR : ActiveRecord> getInjectableInstance(kClass: KClass<out AR>): AR {
+    fun <AR : ActiveRecord> getShallowInstance(kClass: KClass<out AR>): AR {
       return try {
         kClass.java.newInstance()
       } catch (e: InstantiationException) {
@@ -230,14 +206,14 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
      */
     @JvmStatic
     fun <AR : ActiveRecord> find(model: KClass<out AR>, column: String, value: Any?): AR? {
-      val instance = getInjectableInstance(model)
+      val instance = getShallowInstance(model)
 
       return instance.database
-        .select(*getAsNames(instance.indices + instance.fields).toTypedArray())
+        .select(*Field.nameArray(instance.fields))
         .from(instance.table)
         .where("$column = ?")
         .execute(value)
-        .fetchInto(instance)
+        .fetchInto(model)
     }
 
     /**
@@ -267,7 +243,7 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
      */
     @JvmStatic
     inline fun <reified AR : ActiveRecord> find(column: KProperty1<AR, *>, value: Any?): AR? =
-      find(AR::class, getAsName(column), value)
+      find(AR::class, Field.getName(column), value)
 
     /**
      * Find a specific [model] row by the primary key column with the provided [value].
@@ -281,8 +257,13 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
      */
     @JvmStatic
     fun <AR : ActiveRecord> find(model: KClass<AR>, value: Any?): AR? {
-      val instance = getInjectableInstance(model)
-      return find(model, getAsName(instance.primaryKeyProperty), value)
+      val instance = getShallowInstance(model)
+      return instance.database
+        .select(*Field.nameArray(instance.fields))
+        .from(instance.table)
+        .where(instance.idField.name + " = ?")
+        .execute(value)
+        .fetchInto(model)
     }
 
     /**
@@ -308,11 +289,11 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
      */
     @JvmStatic
     fun <AR : ActiveRecord> findAll(model: KClass<AR>, column: KProperty1<AR, *>, value: Any?): List<AR> {
-      val instance = getInjectableInstance(model)
+      val instance = getShallowInstance(model)
       return instance.database
-        .select(*getAsNames(instance.indices + instance.fields).toTypedArray())
+        .select(*Field.nameArray(instance.fields))
         .from(instance.table)
-        .where("`${getAsName(column)}` = ?")
+        .where("`${Field.getName(column)}` = ?")
         .execute(value)
         .fetchAllInto(model)
     }
@@ -330,21 +311,21 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
      */
     @JvmStatic
     fun <AR : ActiveRecord> findAll(model: KClass<AR>, column: KProperty1<AR, *>, values: List<Any?>): List<AR?> {
-      val instance = getInjectableInstance(model)
-      val columnName = getAsName(column)
+      val instance = getShallowInstance(model)
+      val columnName = Field.getName(column)
       return instance.database
-        .select(*getAsNames(instance.indices + instance.fields).toTypedArray())
+        .select(*Field.nameArray(instance.fields))
         .from(instance.table)
         .where("`$columnName` IN (${"?, ".repeat(values.size).dropLast(2)})")
         .execute(values)
         .fetch { result ->
-          val list = (0 until values.size).map { null as AR? }.toMutableList()
+          val list: MutableList<AR?> = (0 until values.size).map { null }.toMutableList()
           for (res in result) {
             val value = res[columnName]
             val index = values.indexOf(value)
             if (index == -1)
               continue
-            list[index] = res.inject(getInjectableInstance(model))
+            list[index] = res.inject(getShallowInstance(model))
           }
           list
         } ?: emptyList()
@@ -375,10 +356,10 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
      */
     @JvmStatic
     fun <AR : ActiveRecord> findAllLike(model: KClass<AR>, column: KProperty1<AR, *>, value: Any?): List<AR> {
-      val instance = getInjectableInstance(model)
-      val columnName = getAsName(column)
+      val instance = getShallowInstance(model)
+      val columnName = Field.getName(column)
       return instance.database
-        .select(*getAsNames(instance.indices + instance.fields).toTypedArray())
+        .select(*Field.nameArray(instance.fields))
         .from(instance.table)
         .where("`$columnName` LIKE ?")
         .execute(value)
@@ -397,56 +378,25 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
     inline fun <reified AR : ActiveRecord> findAllLike(column: KProperty1<AR, *>, value: Any?): List<AR> =
       findAllLike(AR::class, column, value)
 
-    // -------------------------------- Table Helpers ----------------------------------------
-
-    private fun findType(klass: KClass<*>, database: Database): String {
-      return when (klass) {
-        String::class -> if (database.dialect.startsWith("sqlite")) "TEXT" else "MEDIUMTEXT"
-        Int::class, Integer::class -> "INTEGER"
-        Long::class -> "BIGINT"
-        Short::class -> "SMALLINT"
-        Byte::class -> "TINYINT"
-        Timestamp::class -> "TIMESTAMP"
-        Time::class -> "TIME"
-        Date::class -> "DATE"
-        else -> {
-          val values = klass.java.enumConstants
-          when {
-            values is Array<*> -> values.joinToString(" ", "ENUM (", ")") value@{
-              if (it !is Enum<*>) return@value "'$it'"
-              klass.java.getField(it.name)
-                .getAnnotation(SerializedName::class.java)?.value ?: "'$it'"
-            }
-            klass.isSubclassOf(ActiveRecord::class) -> {
-              @Suppress("UNCHECKED_CAST")
-              val ii = ActiveRecord.getInjectableInstance(klass as KClass<ActiveRecord>)
-              findType(ii.primaryKeyProperty.returnType.classifier as? KClass<*> ?: return "", database)
-            }
-            else -> ""
-          }
-        }
-      }
+    fun <AR : ActiveRecord> getAll(kClass: KClass<out AR>): List<AR> {
+      val usableInstance = getShallowInstance(kClass)
+      return usableInstance.database
+        .select(*Field.nameArray(usableInstance.fields))
+        .from(usableInstance.table)
+        .execute()
+        .fetchAllInto(kClass)
     }
 
-    private fun getPropertyTypeSQL(property: KProperty<*>, database: Database): String {
-      val isSqlite = database.dialect.startsWith("sqlite")
-      return property.findAnnotation<Type>()?.let type@{
-        val base = if (isSqlite) it.type.sqliteType else it.type.sqlType
-        val usesSize = if (isSqlite) it.type.sqliteUsesSize else it.type.usesSize
-        if (usesSize) {
-          return@type if (it.size2 != -1)
-            "$base(${it.size1},${it.size2})"
-          else "$base(${it.size1})"
-        } else return@type base
-      } ?: findType(property.returnType.jvmErasure, database)
-    }
+    inline fun <reified AR : ActiveRecord> getAll() = getAll(AR::class)
 
-    /**
+    // --------------------------------------------- Table Helpers -----------------------------------------------------
+
+    /**FIXME
      * Creates a table from the specified model class. This will analyze the model
      * and search for indices, fields, auto increment values and references.
      *
      * - Properties marked by annotation [Exclude] will not be included.
-     * - All fields marked with val/only has a getter or has a annotation [Index]
+     * - All fields marked with val/only has a getter
      *   will be considered to be a indexable value.
      * - Any field delegated by a [DBReference] will become a foreign key
      *   reference.
@@ -455,15 +405,15 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
      */
     @JvmStatic
     fun create(model: KClass<out ActiveRecord>) {
-      getInjectableInstance(model).database.execute(genSQL(model))
+      getShallowInstance(model).database.execute(genSQL(model))
     }
 
-    /**
+    /**FIXME
      * Creates a table from the specified model class. This will analyze the model
      * and search for indices, fields, auto increment values and references.
      *
      * - Properties marked by annotation [Exclude] will not be included.
-     * - All fields marked with val/only has a getter or has a annotation [Index]
+     * - All fields marked with val/only has a getter or has a annotation
      *   will be considered to be a indexable value.
      * - Any field delegated by a [DBReference] will become a foreign key
      *   reference.
@@ -474,73 +424,165 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
 
     @JvmStatic
     fun create(vararg tables: KClass<out ActiveRecord>) {
-      if (tables.isNotEmpty())
-        getInjectableInstance(tables[0]).database.execute(genSQL(*tables))
+      if (tables.isNotEmpty()) {
+        val dbToTable = mutableMapOf<Database, MutableList<KClass<out ActiveRecord>>>()
+        for (table in tables)
+          dbToTable.computeIfAbsent(getShallowInstance(table).database) { mutableListOf() }
+            .add(table)
+
+        dbToTable
+          .map { (db, list) -> db to genSQL(*list.toTypedArray()) }
+          .forEach { (db, sql) ->
+            if (db.isSQLite) {
+              sql
+                .replace(" -- Link table", "")
+                .split("\n);")
+                .filter(String::isNotBlank)
+                .map { "$it\n);" }
+                .forEach { db.execute(it) }
+            } else db.execute(sql)
+          }
+
+      }
     }
 
     @JvmStatic
     @Suppress("UNCHECKED_CAST")
     fun genSQL(model: KClass<out ActiveRecord>): String {
-      val scheme: String? = null
-      val instance = getInjectableInstance(model)
+      val instance = getShallowInstance(model)
+      val table = instance.table
 
-      val table = if (scheme == null) instance.table else "$scheme.${instance.table}"
-      val allFields = instance.indices + instance.fields
-
-      val index = instance.indices.joinToString { getAsName(it) }.trim()
-
-      val sqlFields = allFields
-        .joinToString(", ") {
-          val delegate = (it as KProperty1<ActiveRecord, *>).accessible {
-            getDelegate(instance) as ICreateSQL
-          }
-          delegate.getCreationSQL(instance, it)
+      val sqlFields = instance.fields
+        .joinToString(",\n  ") {
+          val delegate = it.getDelegate(instance) as ICreateSQL
+          delegate.getCreationSQL(instance, it.property)
         }
         .trim()
 
-      val foreign = allFields
-        .map foreign@{
-          val ref = (it as KProperty1<ActiveRecord, *>).accessible {
-            getDelegate(instance)
-          }
-          val keyName = getAsName(it)
-          return@foreign when (ref) {
-            is DBReference<*> -> {
-              val res = ActiveRecord.getInjectableInstance(ref.klass)
-              val keyTable = if (scheme == null) res.table else "$scheme.${res.table}"
-              val refName = getAsName(ref.primaryKey)
-              "FOREIGN KEY ($keyName) REFERENCES $keyTable ($refName)"
-            }
-            is DBReferenceNull<*> -> {
-              val res = ActiveRecord.getInjectableInstance(ref.klass)
-              val keyTable = if (scheme == null) res.table else "$scheme.${res.table}"
-              val refName = getAsName(ref.primaryKey)
-              "FOREIGN KEY ($keyName) REFERENCES $keyTable ($refName)"
-            }
-            else -> ""
-          }
-        }
-        .filter { it.isNotBlank() }
-        .joinToString(",\n  ")
+      val foreign = with(instance.fields) {
+        val res = mapNotNull {
+          when (val ref = it.getDelegate(instance)) {
+            is IReferenceType<*> -> {
+              val ff = ref.field
+              val fkName = "${it.table}_fk_${it.name}"
 
-      val foreignLine =
-        if (foreign.isBlank()) ""
-        else ",\n  \n  $foreign"
+              "CONSTRAINT $fkName FOREIGN KEY (${it.name}) REFERENCES ${ff.table} (${ff.name}) ON DELETE ${ref.action}"
+            }
+            else -> null
+          }
+        }.joinToString(",\n  ")
+
+        if (res.isBlank()) ""
+        else ",\n\n  $res"
+      }
+
+      val primary = run {
+        instance.fields.find {
+          instance.metadata?.digest?.primaryKeys?.contains(it.property) == true
+        } ?: instance.fields.find {
+          it.property.name == "id"
+        }
+      }
+
+//      val primaryLine = if (primary != null)
+//        "\n\n  CONSTRAINT ${instance.table}_pk PRIMARY KEY (${primary.name})"
+//      else ""
 
       val indicesLine =
-        if (index.isBlank() || instance.database.dialect.startsWith("sqlite")) ""
-        else ",\n  \n  INDEX ($index)"
+        if (instance.database.isSQLite) ""
+        else {
+          val digestIndices = instance.metadata?.digest?.indices
+            ?.filter { it.fields[0].property in model.members }
+            ?: emptyList()
+          val modelIndices = instance.fields
+            .filter { it.getDelegate(instance) is IReferenceType<*> }
+            .map { Metadata.Item(it.name, listOf(it)) }
+          val sortIndices = model.memberProperties
+            .asSequence()
+            .map(::Field)
+            .map { it to (it.getDelegate(instance) as? IOrdering<*, *>) }
+            .filter {
+              it.second != null && it.second?.orders?.isNotEmpty() ?: false && it.second?.orders?.all { o ->
+                o.first in model.memberProperties
+              } ?: false
+            }
+            .map { (field, delegate) ->
+              Metadata.Item(
+                field.name + "_list",
+                delegate!!.orders.map(Pair<KProperty<*>, *>::first).map(::Field)
+              )
+            }
+            .toList()
+          val outboundSortIndices = model.memberProperties
+            .map(::Field)
+            .mapNotNull { it.getDelegate(instance) as? ITableReference<*> }
+            .flatMap {
+              it.klass.memberProperties
+                .map(::Field)
+                .mapNotNull { f ->
+                  try {
+                    f to (f.getDelegate(instance) as? IOrdering<*, *>)
+                  } catch (_: Throwable) {
+                    null
+                  }
+                }
+            }
+            .filter {
+              it.second != null && it.second?.orders?.isNotEmpty() ?: false && it.second?.orders?.all { o ->
+                o.first in model.memberProperties
+              } ?: false
+            }
+            .map { (field, delegate) ->
+              Metadata.Item(
+                field.name + "_list",
+                delegate!!.orders.map(Pair<KProperty<*>, *>::first).map(::Field)
+              )
+            }
+          val primaryKey = if (primary != null) Metadata.Item(primary.name, listOf(primary)) else null
+          val indicesList = (digestIndices + modelIndices + sortIndices + outboundSortIndices + primaryKey)
+            .toSet()
+            .filterNotNull()
+          if (indicesList.isEmpty()) ""
+          else {
+            val index = indicesList
+              .joinToString(",\n  ") { item ->
+                "INDEX ${instance.table}_ix_${item.name} (${item.fields.joinToString { it.name }})"
+              }
+              .trim()
+            ",\n\n  $index"
+          }
+        }
+      val uniquesLine = run {
+        val digestUniques = instance.metadata?.digest?.uniques
+          ?.filter { it.fields[0].property in model.members }
+          ?: emptyList()
+        val uniquesList = digestUniques
+          .toSet()
+        if (uniquesList.isEmpty()) ""
+        else {
+          val unique = digestUniques
+            .joinToString(",\n  ") { item ->
+              "CONSTRAINT ${instance.table}_ux_${item.name} UNIQUE (${item.fields.joinToString { it.name }})"
+            }
+            .trim()
+          ",\n\n  $unique"
+        }
+      }
 
       val additional = model.memberProperties.mapNotNull { property ->
-        if (property in allFields) return@mapNotNull null
-        val delegate = (property as KProperty1<ActiveRecord, *>).accessible {
-          getDelegate(instance) as? ICreateSQL?
-        } ?: return@mapNotNull null
-
+        val field = Field(property)
+        if (field in instance.fields) return@mapNotNull null
+        val delegate = field.getDelegate(instance) as? ICreateSQL ?: return@mapNotNull null
         delegate.getCreationSQL(instance, property)
       }.toSet()
 
-      return "CREATE TABLE $table (\n  ${sqlFields.replace(", ", ",\n  ")}$indicesLine$foreignLine\n);" +
+      return "CREATE TABLE $table (\n  " +
+        sqlFields +
+        indicesLine +
+//        primaryLine +
+        uniquesLine +
+        foreign +
+        "\n);" +
         (if (additional.isNotEmpty()) "\n\n" else "") + additional.joinToString("\n\n")
     }
 
@@ -551,91 +593,341 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
     fun genSQL(vararg tables: KClass<out ActiveRecord>): String {
       return if (tables.isEmpty()) "" else tables
         .map(::genSQL)
-        .flatMap { it.split("\n\n") }
+        .flatMap {
+          val all = it.split(";\n\n", "-- Link table\n\n", "-- Link table").toMutableList()
+          val table = all.removeAt(0)
+
+          listOf(
+            if (table.endsWith(";")) table else "$table;",
+            *all
+              .filter(String::isNotBlank)
+              .map { link -> "$link-- Link table" }
+              .toTypedArray()
+          )
+        }
         .toSet()
-        .sortedWith(Comparator { a, b ->
-          val aLink = a.endsWith("-- Link table")
-          val bLink = b.endsWith("-- Link table")
-          if (aLink && !bLink) 1
-          else if (!aLink && bLink) -1
-          else 0
-        })
+        .sortedBy { it.endsWith("-- Link table") }
         .joinToString("\n\n")
     }
 
-    // ---------------------------- Reflection Extensions ------------------------------------
+    fun migrate(vararg tables: KClass<out ActiveRecord>) {
+      //TODO Rename tables?
+      val dbToTables = mutableMapOf<Database, MutableSet<KClass<out ActiveRecord>>>()
+      setOf(*tables).forEach { table ->
+        @Suppress("UNCHECKED_CAST")
+        val instance = getShallowInstance(table as KClass<ActiveRecord>)
+        dbToTables.computeIfAbsent(instance.database) { mutableSetOf() }.add(table)
+      }
+      for ((db, kClasses) in dbToTables) {
+        // Get all database tables and their creation string
+        @Suppress("SqlResolve")
+        val nameToSQL: Map<String, String> = if (db.isSQLite)
+          db.execute("SELECT `name`, `sql` FROM sqlite_master WHERE type='table'").map {
+            it.map { (name, sql) -> name as String to sql as String }.toMap()
+          }.orElseGet(::emptyMap)
+        else db.execute("SHOW TABLES").map { res ->
+          val map = mutableMapOf<String, String>()
+          for ((name) in res)
+            db.execute("SHOW CREATE TABLE `$name`").ifPresent {
+              var sql = it[1] as String
+              sql = sql.split("\n)")[0] + "\n)"
+              map += it[0] as String to sql
+            }
+          map.toMap()
+        }.orElseGet(::emptyMap)
 
-    /**
-     * Filter a collection on if the property has a specific annotation ([A])
-     */
-    private inline fun <reified A : Annotation> Collection<KProperty<*>>.filterNotHasAnnotation() =
-        filter { f -> f.annotations.firstOrNull { it is A } == null }
+        // Go through all class for the database
+        val outSQL = StringBuilder()
+        for (kClass in kClasses) {
+          val creationSQL = genSQL(kClass)
+          val all = creationSQL.split(";\n\n", "; -- Link table\n\n", "; -- Link table").toMutableList()
+          val table = all.removeAt(0)
 
-    private fun <R, V, T : KCallable<V>> T.accessible(block: T.() -> R): R {
-      val a = isAccessible
-      if (!a) isAccessible = true
-      val res = block(this)
-      if (!a) isAccessible = false
-      return res
+          val sqlSources = listOf("$table;", *all
+            .filter(String::isNotBlank)
+            .map { it.replaceFirst("IF NOT EXISTS ", "") }
+            .map { "$it; -- Link table" }
+            .toTypedArray()).map { Pair(it.substring(13, it.indexOf(' ', 14)), it) }
+
+          table@ for ((name, sql) in sqlSources) {
+            if (name !in nameToSQL) {
+              if ("CREATE TABLE $name" !in outSQL && "CREATE TABLE IF NOT EXISTS $name" !in outSQL) {
+                if (outSQL.isNotBlank())
+                  outSQL.append("\n-- separator\n")
+                outSQL.append(sql)
+              }
+            } else {
+              val oldTable = AbstractTable.fromSQLSource(nameToSQL.getValue(name))
+              val newTable = AbstractTable.fromSQLSource(sql)
+              val mods = StringBuilder()
+
+              // Properties
+              for (oldProperty in oldTable.properties) {
+                val newProperty = newTable.properties.find { it.name == oldProperty.name }
+                if (newProperty == null) {
+                  if (db.isSQLite) {
+                    if (outSQL.isNotBlank())
+                      outSQL.append("\n-- separator\n")
+                    outSQL.append(recreate(nameToSQL.getValue(name), sql))
+                    continue@table
+                  } else {
+                    if (mods.isNotBlank())
+                      mods.append("\n-- separator\n")
+                    mods.append("ALTER TABLE ${oldTable.name} DROP COLUMN `${oldProperty.name}`;")
+                  }
+                } else if (newProperty != oldProperty) {
+                  if (db.isSQLite) {
+                    if (outSQL.isNotBlank())
+                      outSQL.append("\n-- separator\n")
+                    outSQL.append(recreate(nameToSQL.getValue(name), sql))
+                    continue@table
+                  } else {
+                    if (mods.isNotBlank())
+                      mods.append("\n-- separator\n")
+                    mods.append(
+                      "ALTER TABLE ${oldTable.name} ${if (db.isSQLServer) "ALTER" else "MODIFY"} COLUMN " +
+                        "`${oldProperty.name}` ${newProperty.type} ${if (!newProperty.nullable) "NOT " else ""}NULL;"
+                    )
+                  }
+                }
+              }
+
+              for (newProperty in newTable.properties) {
+                val oldProperty = oldTable.properties.find { it.name == newProperty.name }
+                if (oldProperty != null)
+                  continue
+                if (mods.isNotBlank())
+                  mods.append("\n-- separator\n")
+                mods.append(
+                  "ALTER TABLE ${newTable.name} ADD COLUMN " +
+                    "`${newProperty.name}` ${newProperty.type} ${if (!newProperty.nullable) "NOT " else ""}NULL;"
+                )
+              }
+
+              // Indices
+              val indexSkip = mutableListOf<AbstractTableIndex>()
+              val oldIndices = oldTable.indices.toMutableList()
+              oldIndices.removeAll(newTable.indices)
+              for (index in oldIndices) {
+                val item = newTable.indices.find { it.properties == index.properties }
+                val prevIndex = when {
+                  index.name != "<unknown>" -> index.name
+                  db.isSQLite -> {
+                    if (outSQL.isNotBlank())
+                      outSQL.append("\n-- separator\n")
+                    outSQL.append(recreate(nameToSQL.getValue(name), sql))
+                    continue@table
+                  }
+                  else -> index.properties[0]
+                }
+                if (item != null) {
+                  if (mods.isNotBlank())
+                    mods.append("\n-- separator\n")
+                  mods.append("DROP INDEX `$prevIndex`${if (!db.isSQLite) " ON ${oldTable.name}" else ""};\n")
+                  mods.append("CREATE INDEX `${item.name}` ON ${oldTable.name} (${item.properties.joinToString()});")
+                  indexSkip += item
+                } else {
+                  if (mods.isNotBlank())
+                    mods.append("\n-- separator\n")
+                  mods.append("DROP INDEX `$prevIndex`${if (!db.isSQLite) " ON ${oldTable.name}" else ""};")
+                }
+              }
+
+              val newIndices = newTable.indices.toMutableList()
+              newIndices.removeAll(oldTable.indices)
+              newIndices.removeAll(indexSkip)
+              for (index in newIndices) {
+                val prevIndex = when {
+                  index.name != "<unknown>" -> index.name
+                  db.isSQLite -> {
+                    if (outSQL.isNotBlank())
+                      outSQL.append("\n-- separator\n")
+                    outSQL.append(recreate(nameToSQL.getValue(name), sql))
+                    continue@table
+                  }
+                  else -> index.properties[0]
+                }
+                if (mods.isNotBlank())
+                  mods.append("\n-- separator\n")
+                mods.append("CREATE INDEX `$prevIndex` ON ${newTable.name} (`${index.properties.joinToString()}`);")
+              }
+
+              // Unique indices
+              val uniqueSkip = mutableListOf<AbstractTableIndex>()
+              val oldUniques = oldTable.uniques.toMutableList()
+              oldUniques.removeAll(newTable.uniques)
+              for (unique in oldUniques) {
+                val item = newTable.uniques.find { it.properties == unique.properties }
+                val prevIndex = when {
+                  unique.name != "<unknown>" -> unique.name
+                  db.isSQLite -> {
+                    if (outSQL.isNotBlank())
+                      outSQL.append("\n-- separator\n")
+                    outSQL.append(recreate(nameToSQL.getValue(name), sql))
+                    continue@table
+                  }
+                  else -> unique.properties[0]
+                }
+                if (item != null) {
+                  if (mods.isNotBlank())
+                    mods.append("\n-- separator\n")
+                  mods.append("DROP INDEX `$prevIndex`${if (!db.isSQLite) " ON ${oldTable.name}" else ""};\n")
+                  mods.append("CREATE UNIQUE INDEX `${item.name}` ON ${oldTable.name} (${item.properties.joinToString()});")
+                  uniqueSkip += item
+                } else {
+                  if (mods.isNotBlank())
+                    mods.append("\n-- separator\n")
+                  mods.append("DROP INDEX `$prevIndex`${if (!db.isSQLite) " ON ${oldTable.name}" else ""};")
+                }
+              }
+
+              val newUniques = newTable.uniques.toMutableList()
+              newUniques.removeAll(oldTable.uniques)
+              newUniques.removeAll(uniqueSkip)
+              for (unique in newUniques) {
+                if (mods.isNotBlank())
+                  mods.append("\n-- separator\n")
+                mods.append("CREATE UNIQUE INDEX `${unique.name}` ON ${newTable.name} (${unique.properties.joinToString()});")
+              }
+
+              // Primary key
+              if (oldTable.primaryKey != newTable.primaryKey) {
+                if (db.isSQLite) {
+                  if (oldTable.primaryKey?.properties != newTable.primaryKey?.properties) {
+                    if (outSQL.isNotBlank())
+                      outSQL.append("\n-- separator\n")
+                    outSQL.append(recreate(nameToSQL.getValue(name), sql))
+                    continue@table
+                  }
+                } else {
+                  if (mods.isNotBlank())
+                    mods.append("\n-- separator\n")
+                  if (oldTable.primaryKey != null)
+                    mods.append("ALTER TABLE users DROP PRIMARY KEY;\n")
+                  if (newTable.primaryKey != null)
+                    mods.append("ALTER TABLE users ADD CONSTRAINT users_pk PRIMARY KEY (${newTable.primaryKey.properties.joinToString()});")
+                }
+              }
+
+              // Foreign keys
+              val skipForeignKeys = mutableListOf<AbstractForeignKey>()
+              for (oldForeignKey in oldTable.foreignKeys) {
+                if (oldForeignKey in newTable.foreignKeys) {
+                  skipForeignKeys += oldForeignKey
+                  continue
+                }
+                if (db.isSQLite) {
+                  if (outSQL.isNotBlank())
+                    outSQL.append("\n-- separator\n")
+                  outSQL.append(recreate(nameToSQL.getValue(name), sql))
+                  continue@table
+                }
+                if (mods.isNotBlank())
+                  mods.append("\n-- separator\n")
+                mods.append("ALTER TABLE ${oldTable.name} DROP FOREIGN KEY ${oldForeignKey.name}")
+              }
+
+              for (newForeignKey in newTable.foreignKeys) {
+                if (newForeignKey in skipForeignKeys)
+                  continue
+                if (mods.isNotBlank())
+                  mods.append("\n-- separator\n")
+                mods.append(
+                  "ALTER TABLE ${newTable.name} ADD " +
+                    "CONSTRAINT ${newForeignKey.name} FOREIGN KEY (${newForeignKey.tableProperty}) " +
+                    "REFERENCES ${newForeignKey.foreignTable} (${newForeignKey.foreignProperty}) " +
+                    "ON DELETE ${newForeignKey.onDeleteAction.sql};"
+                )
+              }
+
+              // Add all modifications
+              if (outSQL.isNotBlank())
+                outSQL.append("\n-- separator\n")
+              outSQL.append(mods)
+            }
+          }
+        }
+
+        // Execute all modifications if there are any to be made
+        if (outSQL.isNotEmpty()) outSQL.toString()
+          .split("\n-- separator")
+          .map(String::trim)
+          .toSet()
+          .sortedBy { it.endsWith("-- Link table") }
+          .filter(String::isNotBlank)
+          .flatMap { it.split(";\n\n") }
+          .map { "$it\n" }
+          .forEach { db.execute(it) }
+      }
     }
 
-    private fun <R> java.lang.reflect.Field.accessible(block: java.lang.reflect.Field.() -> R): R {
-      val a = isAccessible
-      if (!a) isAccessible = true
-      val res = block(this)
-      if (!a) isAccessible = false
-      return res
+    private fun isColumnLine(line: String): Boolean {
+      if (line.isBlank() || line[0] != ' ') return false
+      val l = line.trimStart(' ')
+      return !l.startsWith("FOREIGN") && !l.startsWith("UNIQUE") && !l.startsWith("INDEX")
     }
 
-    /**
-     * Set a value on the field or delegated field on a instance.
-     */
-    fun java.lang.reflect.Field.setValue(instance: Any, value: Any?) {
-      val a = isAccessible
-      if (!a)
-        isAccessible = true
-      if (name.endsWith("\$delegate")) {
-        val delegate = get(instance)
-        val method = delegate::class.java.declaredMethods.findLast { it.name == "setValue" }!!
-        method.invoke(delegate, instance, kotlinProperty!!, value)
-      } else set(instance, value)
-      if (!a)
-        isAccessible = false
+    private fun getNameOfColumnLine(line: String): String = line.split(' ').filter(String::isNotBlank)[0]
+    private fun recreate(oldSQL: String, newSQL: String): String {
+      val normalName = newSQL.substring(13, newSQL.indexOf(' ', 14))
+      val tempName = "${normalName}_temp_table"
+      val oldLines = oldSQL.split('\n').filter(::isColumnLine).map(::getNameOfColumnLine)
+      val newLines = newSQL.split('\n').filter(::isColumnLine).map(::getNameOfColumnLine)
+      val columns = oldLines.intersect(newLines).joinToString()
+
+      return "DROP TABLE IF EXISTS $tempName;\n" +
+        "\n" +
+        "${newSQL.replaceFirst(normalName, tempName)};\n" +
+        "\n" +
+        "INSERT INTO $tempName ($columns) SELECT $columns FROM $normalName;\n" +
+        "\n" +
+        "DROP TABLE $normalName;\n" +
+        "\n" +
+        "ALTER TABLE $tempName RENAME TO $normalName;"
     }
 
-    /**
-     * Get a value from a field or delegated field from a instance.
-     */
-    fun java.lang.reflect.Field.getValue(instance: Any) {
-      val a = isAccessible
-      if (!a)
-        isAccessible = true
-      if (name.endsWith("\$delegate")) {
-        ReadOnlyProperty<*, *>::getValue.call(get(instance), instance, kotlinProperty!!)
-      } else get(instance)
-      if (!a)
-        isAccessible = false
+    fun clearAllDataFrom(vararg tables: KClass<out ActiveRecord>) {
+      if (tables.isNotEmpty()) {
+        val tableToInstance = mutableMapOf<KClass<out ActiveRecord>, ActiveRecord>()
+        val dbToTable = mutableMapOf<Database, MutableSet<KClass<out ActiveRecord>>>()
+        for (table in tables) {
+          val instance = tableToInstance.computeIfAbsent(table) { getShallowInstance(table) }
+          dbToTable.computeIfAbsent(instance.database) { mutableSetOf() }.add(table)
+        }
+
+        for ((db, dbTables) in dbToTable) {
+          if (db.isSQLite) {
+            @Suppress("SqlWithoutWhere")
+            for (table in dbTables)
+              db.execute("DELETE FROM ${tableToInstance[table]!!.table};")
+          } else {
+            db.execute(buildString {
+              for (table in dbTables)
+                append("DELETE FROM ${tableToInstance[table]!!.table};\n")
+            })
+          }
+        }
+      }
     }
   }
 
-  // -------------------------------- Object overrides ---------------------------------------
+  // --------------------------------------------- Object overrides ----------------------------------------------------
 
-  override fun hashCode() = fields.fold(31) { acc, f -> acc * (f.getter.call(this)?.hashCode() ?: 1) }
+  override fun hashCode() = fields.fold(31) { acc, f ->
+    acc * (if (f.hasValue(this)) f.getValue(this)?.hashCode() ?: 1 else 1)
+  }
 
-  override fun toString() = this::class.java.simpleName + (indices + fields)
+  override fun toString() = this::class.java.simpleName + fields
     .joinToString(",", prefix = "(", postfix = ")") {
-      if (!hasValue(it))
-        return@joinToString "${it.name}=<unknown>"
-      @Suppress("UNCHECKED_CAST")
-      val prop = it as KProperty1<Any, Any>
-      val a = prop.isAccessible
-      if (!a) prop.isAccessible = true
-      val delegate = prop.getDelegate(this@ActiveRecord)
-      if (!a) prop.isAccessible = false
-      delegate ?: "${it.name}=<unknown>"
-      if (delegate !is PropertyWithType<*> || delegate.type == PropertyWithType.Type.REFERENCE)
-        return@joinToString "${it.name}=<abbreviated>"
-      "${it.name}=${getValue(it)}".replace("\n", "\\n").replace("\t", "\\t")
+      if (!it.hasValue(this))
+        return@joinToString "${it.property.name}=<unknown>"
+
+      val delegate = it.getDelegate(this) as? IPropertyWithType<*>
+        ?: return@joinToString "${it.property.name}=<unknown>"
+      if (delegate.type == IPropertyWithType.Type.REFERENCE)
+        return@joinToString "${it.property.name}=<abbreviated>"
+
+      "${it.property.name}=${it.getValue(this)}".replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
     }
 
   override fun equals(other: Any?): Boolean {
@@ -643,21 +935,12 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
     if (other !is ActiveRecord) return false
 
     if (table != other.table) return false
-    if (indices != other.indices) return false
-    if (fields != other.fields) return false
+    if (idField.hasValue(this) != idField.hasValue(other)) return false
 
-    if (!this.hasValue(primaryKeyProperty)) return false
-    if (!other.hasValue(primaryKeyProperty)) return false
-
-    return this.getValue(primaryKeyProperty) == other.getValue(primaryKeyProperty)
+    return idField.getValue(this) == idField.getValue(other)
   }
 
-// -------------------------------- Delegate functions -------------------------------------
-
-  /**
-   * The primary key value of the table.
-   */
-  protected fun primaryKey() = DBPrimaryKey()
+  // --------------------------------------------- Delegate functions --------------------------------------------------
 
   /**
    * If you want to specify a value column in a table.
@@ -672,9 +955,9 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    * @param default The default value factory function.
    */
   @Suppress("UNCHECKED_CAST")
-  protected inline fun <reified T : Any?> value(noinline default: (() -> T)? = null): PropertyWithType<T> =
-    if (null is T) DBValueNullable<T>() as PropertyWithType<T>
-    else DBValue(T::class.java, default) as PropertyWithType<T>
+  protected inline fun <reified T : Any?> value(noinline default: (() -> T)? = null): IPropertyWithType<T> =
+    if (null is T) DBValueNullable<T>() as IPropertyWithType<T>
+    else DBValue(T::class.java, default) as IPropertyWithType<T>
 
   /**
    * Reference a column from another table where the reference can be null
@@ -693,9 +976,14 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    * @param T The type of the referenced ActiveRecord.
    */
   @Suppress("UNCHECKED_CAST")
-  protected inline fun <reified T : ActiveRecord?> reference(): PropertyWithType<T> =
-    if (null is T) DBReferenceNull(T::class as KClass<out ActiveRecord>) as PropertyWithType<T>
-    else DBReference(T::class as KClass<out ActiveRecord>) as PropertyWithType<T>
+  protected inline fun <reified T : ActiveRecord?> reference(): IReferenceType<T> =
+    if (null is T) DBReferenceNull<ActiveRecord>(T::class as KClass<out ActiveRecord>, null) as IReferenceType<T>
+    else DBReference<ActiveRecord>(T::class as KClass<out ActiveRecord>, null) as IReferenceType<T>
+
+  @Suppress("UNCHECKED_CAST")
+  protected inline fun <reified T : ActiveRecord?> reference(column: KProperty1<T, *>): IReferenceType<T> =
+    if (null is T) DBReferenceNull(T::class as KClass<out ActiveRecord>, column as KProperty1<ActiveRecord, *>) as IReferenceType<T>
+    else DBReference(T::class as KClass<out ActiveRecord>, column as KProperty1<ActiveRecord, *>) as IReferenceType<T>
 
   /**
    * Reference a list of possible values. This can be anything that could
@@ -706,21 +994,15 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    * The resulting list is a [DatabaseList] that has a [DatabaseList.refresh]
    * method that can be used to have the list update its contents.
    *
-   * @param klass The kotlin class type of the reference class.
+   * @param kClass The kotlin class type of the reference class.
    * @param table The the name of the link table.
    * @param key The column name that references this table.
    * @param referenceKey The column name that references the other table.
    * @param T The type of the reference ActiveRecord.
    * @return A delegate for a semi live list of the values.
    */
-  protected fun <T : ActiveRecord> referenceMany(klass: KClass<T>, table: String? = null, key: String? = null, referenceKey: String? = null) =
-    DBManyReference(
-      lazy { klass },
-      lazy { table },
-      lazy { key },
-      lazy { referenceKey },
-      lazy { ActiveRecord.getInjectableInstance(klass) }
-    )
+  protected fun <T : ActiveRecord> referenceMany(kClass: KClass<T>, table: String? = null, key: String? = null, referenceKey: String? = null) =
+    DBManyReference(table, key, referenceKey, kClass)
 
   /**
    * Reference a list of possible values. This can be anything that could
@@ -738,13 +1020,7 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    * @return A delegate for a semi live list of the values.
    */
   protected inline fun <reified T : ActiveRecord> referenceMany(table: String? = null, key: String? = null, referenceKey: String? = null) =
-    DBManyReference(
-      lazy { T::class },
-      lazy { table },
-      lazy { key },
-      lazy { referenceKey },
-      lazy { ActiveRecord.getInjectableInstance(T::class) }
-    )
+    DBManyReference(table, key, referenceKey, T::class)
 
   /**
    * Reference a list of possible values. This can be anything that could
@@ -757,22 +1033,11 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    *
    * @param reverse The property to use as a reference but reverse the key
    *      and reference key
-   * @param T The type of the reference ActiveRecord.
+   * @param F The type of the reference ActiveRecord.
    * @return A delegate for a semi live list of the values.
    */
-  protected fun <T : ActiveRecord, R : ActiveRecord> referenceMany(reverse: KProperty1<T, DatabaseList<R>>): DBManyReference<T> {
-    val klass = reverse.javaField!!.declaringClass!!.kotlin as KClass<T>
-    val delegate by lazy {
-      val instance = ActiveRecord.getInjectableInstance(klass)
-      reverse.accessible { getDelegate(instance) } as DBManyReference<R>
-    }
-    return DBManyReference(
-      lazy { klass },
-      lazy { delegate.table.value },
-      lazy { delegate.referenceKey.value },
-      lazy { delegate.key.value },
-      lazy { ActiveRecord.getInjectableInstance(klass) }
-    )
+  protected fun <F : ActiveRecord, T : ActiveRecord> referenceMany(reverse: KProperty1<F, DatabaseList<T>>): DBManyReferenceReverse<F, T> {
+    return DBManyReferenceReverse(reverse)
   }
 
   /**
@@ -790,562 +1055,151 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
     DBOneToManyReference(reference, limit)
 
   /**
-   * Retrieve a list of [R] from the property that has a DatabaseList ([by])
-   * resolved by the property in the [from] parameter.
+   * Retrieve a list of [R] mapper the property that has a DatabaseList ([from])
+   * resolved from the property in the [mapper] parameter.
    *
    * A example is if you have users that can follow eachother and that the users
    * can make posts. How do you retrieve the posts of all you follow? You can do
-   * it like this: `val timeline by receiveMany(from = Post::author, by =
+   * it like this: `val timeline from receiveMany(mapper = Post::author, from =
    * User::follows)`.
    *
-   * @param from The property that will resolve the results into the correct model.
-   * @param by Where you can get the list of values.
+   * @param mapper The property that will resolve the results into the correct model.
+   * @param from Where you can get the list of values.
    * @param R The return type.
    */
   protected inline fun <reified R, reified T> receiveMany(
-    from: KMutableProperty1<in R, in T>,
-    by: KProperty1<out ActiveRecord, DatabaseList<in T>>
+    from: KProperty1<out ActiveRecord, DatabaseList<in T>>,
+    mapper: KProperty1<in R, T>
   ) where R : ActiveRecord, T : ActiveRecord =
-    DBReceiveList(from, by)
+    DBReceiveList(from, mapper)
 
-// -------------------------------- Delegate classes ---------------------------------------
+  // ------------------------------------------------- Metadata --------------------------------------------------------
 
-  protected class DBPrimaryKey : DBValue<Int>(Int::class.java, null) {
-    override fun getCreationSQL(instance: ActiveRecord, property: KProperty<*>): String {
-      val auto =
-        if (property.findAnnotation<Auto>() != null && !instance.database.dialect.startsWith("sqlite")) " AUTO_INCREMENT"
-        else ""
-      return super.getCreationSQL(instance, property) + "$auto PRIMARY KEY"
-    }
-  }
+  enum class Type(val sqlType: String, val usesSize: Boolean, val sqliteType: String, val sqliteUsesSize: Boolean) {
 
-  protected open class DBValue<T>(
-    val valueClass: Class<T>,
-    val default: (() -> T)? = null
-  ) : PropertyWithType<T?>, IInjectable, ICreateSQL {
-    /** The current value */
-    private var value: T? = null
-    override val type = PropertyWithType.Type.VALUE
+    INT("INT", false, "INTEGER", false),
+    INTEGER("INTEGER", false, "INTEGER", false),
+    TINYINT("TINYINT", false, "INTEGER", false),
+    SMALLINT("SMALLINT", false, "INTEGER", false),
+    MEDIUMINT("MEDIUMINT", false, "INTEGER", false),
+    BIGINT("BIGINT", false, "INTEGER", false),
+    UNSIGNED_BIG_INT("UNSIGNED BIG INT", false, "INTEGER", false),
+    INT2("INT2", false, "INTEGER", false),
+    INT8("INT8 ", false, "INTEGER", false),
 
-    /***/
-    override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): T = (value ?: default?.invoke())!!
+    CHARACTER("CHARACTER", true, "TEXT", false),
+    VARCHAR("VARCHAR", true, "TEXT", false),
+    VARYING_CHARACTER("VARYING CHARACTER", true, "TEXT", false),
+    NCHAR("NCHAR", true, "TEXT", false),
+    NATIVE_CHARACTER("NATIVE CHARACTER", true, "TEXT", false),
+    NVARCHAR("NVARCHAR", true, "TEXT", false),
+    TEXT("TEXT", false, "TEXT", false),
+    CLOB("CLOB", false, "TEXT", false),
 
-    /***/
-    override fun setValue(thisRef: ActiveRecord, property: KProperty<*>, value: T?) {
-      if (value == null)
-        throw NullPointerException("value was null")
-      if (this.value is Enum<*> && value is String) {
-        val new = (this.value as Enum<*>)::class.java.getDeclaredMethod("valueOf").invoke(null, value)
-        DBValue<*>::value.set(this, new)
-      } else this.value = value
-    }
+    REAL("REAL", false, "REAL", false),
+    DOUBLE("DOUBLE", false, "REAL", false),
+    DOUBLE_PRECISION("DOUBLE PRECISION", false, "REAL", false),
+    FLOAT("FLOAT ", false, "REAL", false),
 
-    companion object {
-      val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
-      val dateFormat = SimpleDateFormat("yyyy-MM-dd")
-      val timeFormat = SimpleDateFormat("HH:mm:ss")
-    }
+    NUMERIC("NUMERIC", false, "NUMERIC", false),
+    DECIMAL("DECIMAL", true, "NUMERIC", false),
+    BOOLEAN("BOOLEAN", false, "NUMERIC", false),
+    DATE("DATE", false, "NUMERIC", false),
+    DATETIME("DATETIME", false, "NUMERIC", false);
 
-    @Suppress("UNCHECKED_CAST")
-    override fun inject(value: Any?) {
-      if (this.value is Enum<*> && value is String) {
-        val new = (this.value as Enum<*>)::class.java.getDeclaredMethod("valueOf").invoke(null, value)
-        DBValue<*>::value.set(this, new)
-      } else if (value != null) this.value = when (valueClass) {
-        Timestamp::class.java -> Timestamp(timestampFormat.parse(value as String).time) as T
-        Date::class.java -> Date(dateFormat.parse(value as String).time) as T
-        Time::class.java -> Time(timeFormat.parse(value as String).time) as T
-        else -> value as T
+    fun toString(database: Database?, param1: Int?, param2: Int?): String {
+      val base = if (database?.isSQLite == true) sqliteType else sqlType
+      val usesSize = if (database?.isSQLite == true) sqliteUsesSize else usesSize
+
+      return when {
+        usesSize && param2 != null -> "$base($param1,$param2)"
+        usesSize -> "$base($param1)"
+        else -> base
       }
     }
-
-    override fun getCreationSQL(instance: ActiveRecord, property: KProperty<*>): String =
-      "${getAsName(property)} ${getPropertyTypeSQL(property, instance.database)} NOT NULL"
   }
-
-  protected class DBValueNullable<T> : PropertyWithType<T?>, ICreateSQL {
-    /** The current value */
-    private var value: T? = null
-    override val type = PropertyWithType.Type.VALUE
-
-    /***/
-    override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): T? = value
-
-    /***/
-    override fun setValue(thisRef: ActiveRecord, property: KProperty<*>, value: T?) {
-      if (value == null) {
-        this.value = null
-        return
-      }
-      if (this.value is Enum<*> && value is String) {
-        val new = (this.value as Enum<*>)::class.java.getDeclaredMethod("valueOf").invoke(null, value)
-        DBValueNullable<*>::value.set(this, new)
-      } else this.value = value
-    }
-
-    override fun getCreationSQL(instance: ActiveRecord, property: KProperty<*>): String =
-      "${getAsName(property)} ${getPropertyTypeSQL(property, instance.database)}"
-  }
-
-  protected class DBReference<T : ActiveRecord>(val klass: KClass<out T>) : PropertyWithType<T?>, IInjectable, ICreateSQL {
-    val primaryKey: KProperty<*>
-    private val select: CompiledSelectQuery
-    private var value: Any? = null
-    override val type = PropertyWithType.Type.REFERENCE
-
-    init {
-      val instance = ActiveRecord.getInjectableInstance(klass)
-      primaryKey = instance.primaryKeyProperty
-      select = instance.database
-        .select(*getAsNames(instance.indices + instance.fields).map { "t1.$it" }.toTypedArray())
-        .from("${instance.table} t1")
-        .where("t1.${getAsName(primaryKey)} = ?")
-        .limit(1)
-        .compile()
-    }
-
-    /***/
-    override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): T = select.execute(value).fetchInto(klass)!!
-
-    /***/
-    override fun setValue(thisRef: ActiveRecord, property: KProperty<*>, value: T?) {
-      this.value = value?.getValue(primaryKey) ?: throw NullPointerException("value was null")
-    }
-
-    override fun inject(value: Any?) {
-      this.value = value
-    }
-
-    override fun getCreationSQL(instance: ActiveRecord, property: KProperty<*>): String =
-      "${getAsName(property)} ${getPropertyTypeSQL(property, instance.database)} NOT NULL"
-  }
-
-  protected class DBReferenceNull<T : ActiveRecord>(val klass: KClass<out T>) : PropertyWithType<T?>, IInjectable, ICreateSQL {
-    override val type = PropertyWithType.Type.REFERENCE
-    var value: Any? = null
-    val instance by lazy { ActiveRecord.getInjectableInstance(klass) }
-    val primaryKey by lazy { instance.primaryKeyProperty }
-    val select by lazy {
-      instance.database
-        .select(*getAsNames(instance.indices + instance.fields).map { "t1.$it" }.toTypedArray())
-        .from("${instance.table} t1")
-        .where("t1.${getAsName(primaryKey)} = ?")
-        .limit(1)
-        .compile()
-    }
-
-    /***/
-    override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): T? =
-      if (value == null) null else select.execute(value).fetchInto(klass)
-
-    /***/
-    override fun setValue(thisRef: ActiveRecord, property: KProperty<*>, value: T?) {
-      this.value = value?.getValue(primaryKey)
-    }
-
-    override fun inject(value: Any?) {
-      this.value = value
-    }
-
-    override fun getCreationSQL(instance: ActiveRecord, property: KProperty<*>): String =
-      "${getAsName(property)} ${getPropertyTypeSQL(property, instance.database)}"
-  }
-
-  class DatabaseList<T : ActiveRecord>(private val ar: ActiveRecord,
-                                       private val select: SelectQueryBuilder,
-                                       private val linkTable: String,
-                                       private val fromName: String,
-                                       private val columns: Array<String>,
-                                       private val fromProperty: KProperty<*>,
-                                       private val toProperty: KProperty<*>,
-                                       private val resultClass: KClass<T>) : MutableList<T> {
-
-    private val cache = LinkedList<T>()
-
-    init {
-//      // Create the link table if not exists
-//      val sql = "CREATE TABLE IF NOT EXISTS $linkTable (${getPropertySQL(fromName, from)},${getPropertySQL(toName, to)})"
-//      ar.database.execute(sql)
-      // Get all initial elements
-      refresh()
-    }
-
-    /**
-     * Refreshes the element cache to what it currently is in the database.
-     * Does not run if the primary property has no value.
-     */
-    fun refresh() {
-      if (!ar.hasValue(fromProperty))
-        return
-      cache.clear()
-      cache.addAll(
-        select
-          .execute(ar.getValue(fromProperty))
-          .fetchAllInto(resultClass)
-      )
-    }
-
-    override val size: Int get() = cache.size
-
-    override fun contains(element: T) = cache.contains(element)
-
-    override fun containsAll(elements: Collection<T>) = cache.containsAll(elements)
-
-    override fun isEmpty() = cache.isEmpty()
-
-    override fun add(element: T): Boolean {
-      return try {
-        ar.database.insertInto(linkTable, columns, arrayOf(ar.getValue(fromProperty), element.getValue(toProperty)))
-        cache.add(element)
-      } catch (_: SQLException) {
-        false
-      }
-    }
-
-    override fun addAll(elements: Collection<T>): Boolean {
-      return try {
-        ar.database.transaction {
-          val value = ar.getValue(fromProperty)
-          for (element in elements)
-            ar.database.insertInto(linkTable, columns, arrayOf(value, element.getValue(toProperty)))
-        }
-        cache.addAll(elements)
-      } catch (_: SQLException) {
-        false
-      }
-    }
-
-    override fun clear() {
-      ar.database.deleteFrom(linkTable, listOf(fromName), listOf(ar.getValue(fromProperty)))
-      cache.clear()
-    }
-
-    override fun iterator() = cache.iterator()
-
-    override fun remove(element: T): Boolean {
-      return try {
-        ar.database.deleteFrom(linkTable, columns, arrayOf(ar.getValue(fromProperty), element.getValue(toProperty)))
-        cache.remove(element)
-      } catch (_: SQLException) {
-        false
-      }
-    }
-
-    override fun removeAll(elements: Collection<T>): Boolean {
-      return try {
-        ar.database.transaction {
-          val value = ar.getValue(fromProperty)
-          for (element in elements)
-            ar.database.deleteFrom(linkTable, columns, arrayOf(value, element.getValue(toProperty)))
-        }
-        cache.removeAll(elements)
-      } catch (_: SQLException) {
-        false
-      }
-    }
-
-    override fun retainAll(elements: Collection<T>) = removeAll(cache.filter { it !in elements })
-    override fun add(index: Int, element: T) {
-      add(element)
-      cache.add(index, element)
-      cache.removeLast()
-    }
-
-    override fun addAll(index: Int, elements: Collection<T>): Boolean = addAll(elements)
-
-    override fun get(index: Int): T = cache[index]
-
-    override fun indexOf(element: T): Int = cache.indexOf(element)
-
-    override fun lastIndexOf(element: T): Int = cache.lastIndexOf(element)
-
-    override fun listIterator(): MutableListIterator<T> = cache.listIterator()
-
-    override fun listIterator(index: Int): MutableListIterator<T> = cache.listIterator(index)
-
-    override fun removeAt(index: Int): T = cache.removeAt(index).also(ActiveRecord::delete)
-
-    override fun set(index: Int, element: T): T {
-      val item = cache.set(index, element)
-      item.database.transaction {
-        item.delete()
-        val id = item.primaryKeyProperty.getter.call(item)
-        val delegate = element.primaryKeyProperty.javaField!!.accessible {
-          get(element)
-        } as ReadWriteProperty<*, *>
-        ReadWriteProperty<*, *>::setValue.call(delegate, element, element.primaryKeyProperty, id)
-        element.save()
-      }
-      return item
-    }
-
-    override fun subList(fromIndex: Int, toIndex: Int): MutableList<T> = throw Exception("Not supported")
-
-    override fun toString() = cache.toString()
-  }
-
-  protected open class DBManyReference<T : ActiveRecord>(val klass: Lazy<KClass<T>>,
-                                                         val table: Lazy<String?>,
-                                                         val key: Lazy<String?>,
-                                                         val referenceKey: Lazy<String?>,
-                                                         val instance: Lazy<T>) : ReadOnlyProperty<ActiveRecord, DatabaseList<T>>, ICreateSQL {
-    lateinit var list: DatabaseList<T>
-
-    @Suppress("UNCHECKED_CAST")
-    override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): DatabaseList<T> {
-      if (!::list.isInitialized) {
-        val table = table.getValue(this, ::table)
-        val key = key.getValue(this, ::key)
-        val referenceKey = referenceKey.getValue(this, ::referenceKey)
-        val klass = klass.getValue(this, ::klass)
-        val instance = instance.getValue(this, ::instance)
-
-        val linkTable = table ?: property.name
-        val fromNamePrefix = thisRef.javaClass.simpleName.toLowerCase()
-        val fromName = key ?: "${fromNamePrefix}_${getAsName(thisRef.primaryKeyProperty)}"
-        val toNamePrefix = if (instance.table == thisRef.table) linkTable else klass.java.simpleName.toLowerCase()
-        val toName = referenceKey ?: "${toNamePrefix}_${getAsName(instance.primaryKeyProperty)}"
-        val from = thisRef.primaryKeyProperty as KProperty1<ActiveRecord, Any>
-        val to = instance.primaryKeyProperty as KProperty1<T, Any>
-
-        val allFields = instance.indices + instance.fields
-        val select = instance.database
-          .select(*getAsNames(allFields).map { "t1.$it" }.toTypedArray())
-          .from("${instance.table} t1")
-          .join("$linkTable t2", "t1.${getAsName(to)} = t2.$toName")
-          .where("t2.$fromName = ?")
-
-        for ((column, order) in orders)
-          select.orderBy(column(), order)
-
-        if (limit != null)
-          select.limit(limit!!)
-
-        // Create link table if not exists
-        thisRef.database.execute(getCreationSQL(thisRef, property))
-
-        list = DatabaseList(thisRef, select, linkTable, fromName, arrayOf(fromName, toName), from, to, klass)
-      }
-      return list
-    }
-
-    private val orders = mutableSetOf<Pair<() -> String, Order>>()
-    private var limit: Int? = null
-
-    fun orderBy(property: KProperty1<T, *>, order: Order = Order.NONE): DBManyReference<T> {
-      orders += { getAsName(property) } to order
-      return this
-    }
-
-    fun limit(amount: Int): DBManyReference<T> {
-      limit = amount
-      return this
-    }
-
-    override fun getCreationSQL(thisRef: ActiveRecord, property: KProperty<*>): String {
-      val table = table.getValue(this, ::table)
-      val key = key.getValue(this, ::key)
-      val referenceKey = referenceKey.getValue(this, ::referenceKey)
-      val klass = klass.getValue(this, ::klass)
-      val instance = instance.getValue(this, ::instance)
-
-      val linkTable = table ?: property.name
-
-      val properties = listOf(
-
-        Triple(
-          key ?: "${
-          thisRef.javaClass.simpleName.toLowerCase()
-          }_${getAsName(thisRef.primaryKeyProperty)}",
-          thisRef.primaryKeyProperty,
-          thisRef
-        ),
-
-        Triple(
-          referenceKey ?: "${
-          if (instance.table == thisRef.table) linkTable
-          else klass.java.simpleName.toLowerCase()
-          }_${getAsName(instance.primaryKeyProperty)}",
-          instance.primaryKeyProperty,
-          instance
-        )
-
-      ).sortedBy(Triple<String, KProperty<*>, ActiveRecord>::first)
-
-      val foreignKeys =
-        if (thisRef.database.dialect.startsWith("sqlite")) ""
-        else ",\n  \n" +
-          "  FOREIGN KEY (${properties[0].first}) REFERENCES ${properties[1].third.table} (${getAsName(properties[1].second)}),\n" +
-          "  FOREIGN KEY (${properties[1].first}) REFERENCES ${properties[0].third.table} (${getAsName(properties[0].second)})"
-
-      return "CREATE TABLE IF NOT EXISTS $linkTable (\n" +
-        "  ${properties[0].first} ${getPropertyTypeSQL(properties[0].second, properties[0].third.database)} NOT NULL,\n" +
-        "  ${properties[1].first} ${getPropertyTypeSQL(properties[1].second, properties[1].third.database)} NOT NULL" +
-        foreignKeys +
-        "\n); -- Link table"
-    }
-  }
-
-  protected class DBOneToManyReference<T : ActiveRecord>(referenceKey: KProperty1<T, Any?>, limit: Int?) : ReadOnlyProperty<ActiveRecord, List<T>> {
-    @Suppress("UNCHECKED_CAST")
-    val klass = referenceKey.javaField?.declaringClass?.kotlin as? KClass<T>
-      ?: throw InvalidClassException("Could not find a kotlin class for field?")
-    val selector by lazy {
-      val instance = ActiveRecord.getInjectableInstance(klass)
-      val selector = instance.database
-        .select(*getAsNames(instance.indices + instance.fields).toTypedArray())
-        .from(instance.table)
-        .where("${getAsName(referenceKey)} = ?")
-      if (limit != null)
-        selector.limit(limit)
-      selector.compile()
-    }
-
-    override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): List<T> =
-      selector.execute(thisRef.getValue(thisRef.primaryKeyProperty)).fetchAllInto(klass)
-  }
-
-  protected class DBReceiveList<R : ActiveRecord, T : ActiveRecord>(
-    val from: KMutableProperty1<in R, in T>,
-    val by: KProperty1<out ActiveRecord, DatabaseList<in T>>
-  ) : ReadOnlyProperty<ActiveRecord, List<R>> {
-
-    @Suppress("UNCHECKED_CAST")
-    val resKlass by lazy { from.javaField!!.declaringClass.kotlin as KClass<R> }
-    val res by lazy { ActiveRecord.getInjectableInstance(resKlass) }
-
-    @Suppress("UNCHECKED_CAST")
-    val select by lazy {
-      val intermediate = ActiveRecord.getInjectableInstance(by.javaField!!.declaringClass.kotlin as KClass<out ActiveRecord>)
-      val listDelegate = (by as KProperty1<Any, Any>).accessible { getDelegate(intermediate) } as DBManyReference<T>
-
-      val instance = listDelegate.instance.getValue(listDelegate, DBManyReference<T>::instance)
-      val klass = listDelegate.klass.getValue(listDelegate, DBManyReference<T>::klass)
-      val table = listDelegate.table.getValue(listDelegate, DBManyReference<T>::table)
-      val key = listDelegate.key.getValue(listDelegate, DBManyReference<T>::key)
-      val referenceKey = listDelegate.referenceKey.getValue(listDelegate, DBManyReference<T>::referenceKey)
-
-      val linkTable = table ?: by.name
-      val fromNamePrefix = intermediate.javaClass.simpleName.toLowerCase()
-      val fromName = key ?: "${fromNamePrefix}_${getAsName(intermediate.primaryKeyProperty)}"
-      val toNamePrefix = if (instance.table == intermediate.table) linkTable else klass.java.simpleName.toLowerCase()
-      val toName = referenceKey ?: "${toNamePrefix}_${getAsName(instance.primaryKeyProperty)}"
-      val select = res.database
-        .select(*getAsNames(res.indices + res.fields).map { "t2.$it" }.toTypedArray())
-        .from("$linkTable t1")
-        .join("${res.table} t2", "t2.${getAsName(from)} = t1.$toName")
-        .join("${intermediate.table} t3", "t2.${getAsName(from)} = t3.${getAsName(intermediate.primaryKeyProperty)}")
-        .where("t1.$fromName = ?")
-
-      for ((column, order) in orders)
-        select.orderBy(column(), order)
-
-      if (limit != null)
-        select.limit(limit!!)
-
-      select.compile()
-    }
-
-    override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): List<R> =
-      select.execute(thisRef.getValue(thisRef.primaryKeyProperty)).fetchAllInto(resKlass)
-
-    private val orders = mutableSetOf<Pair<() -> String, Order>>()
-    private var limit: Int? = null
-
-    fun orderBy(property: KProperty1<R, *>, order: Order = Order.NONE): DBReceiveList<R, T> {
-      orders += { getAsName(property) } to order
-      return this
-    }
-
-    fun limit(amount: Int): DBReceiveList<R, T> {
-      limit = amount
-      return this
-    }
-  }
-
-  protected interface PropertyWithType<T> : ReadWriteProperty<ActiveRecord, T> {
-    val type: Type
-
-    enum class Type { VALUE, REFERENCE }
-  }
-
-  protected interface ICreateSQL {
-    fun getCreationSQL(instance: ActiveRecord, property: KProperty<*>): String
-  }
-
-// ----------------------------------- Annotations -----------------------------------------
 
   /**
-   * Explicitly states that a property is a field in the database specification.
+   * Specifies metadata about a table or a group of tables. Here you can specify
+   * what type a property is in more detail, what properties has unique values,
+   * what indices the table has, and what properties should be automatically
+   * incremented.
    */
-  @Retention(AnnotationRetention.RUNTIME)
-  @Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
-  @MustBeDocumented
-  annotation class Field
+  class Metadata private constructor(private val parent: Metadata?, private val init: Metadata.() -> Unit) {
+    constructor(init: Metadata.() -> Unit) : this(null, init)
 
-  /**
-   * Explicitly say that a property is a database index.
-   */
-  @Retention(AnnotationRetention.RUNTIME)
-  @Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
-  @MustBeDocumented
-  annotation class Index
-
-  /**
-   * Makes a property not be part of the model specification.
-   */
-  @Retention(AnnotationRetention.RUNTIME)
-  @Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
-  @MustBeDocumented
-  annotation class Exclude
-
-  /**
-   * Defines a auto incremented value in the database.
-   */
-  @Retention(AnnotationRetention.RUNTIME)
-  @Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
-  @MustBeDocumented
-  annotation class Auto
-
-  /**
-   * Defines the type of the database column when using [ActiveRecord.create].
-   */
-  @Retention(AnnotationRetention.RUNTIME)
-  @Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
-  @MustBeDocumented
-  annotation class Type(val type: SQL, val size1: Int = -1, val size2: Int = -1) {
-    enum class SQL(val sqlType: String, val usesSize: Boolean, val sqliteType: String, val sqliteUsesSize: Boolean) {
-
-      INT("INT", false, "INTEGER", false),
-      INTEGER("INTEGER", false, "INTEGER", false),
-      TINYINT("TINYINT", false, "INTEGER", false),
-      SMALLINT("SMALLINT", false, "INTEGER", false),
-      MEDIUMINT("MEDIUMINT", false, "INTEGER", false),
-      BIGINT("BIGINT", false, "INTEGER", false),
-      UNSIGNED_BIG_INT("UNSIGNED BIG INT", false, "INTEGER", false),
-      INT2("INT2", false, "INTEGER", false),
-      INT8("INT8 ", false, "INTEGER", false),
-
-      CHARACTER("CHARACTER", true, "TEXT", false),
-      VARCHAR("VARCHAR", true, "TEXT", false),
-      VARYING_CHARACTER("VARYING CHARACTER", true, "TEXT", false),
-      NCHAR("NCHAR", true, "TEXT", false),
-      NATIVE_CHARACTER("NATIVE CHARACTER", true, "TEXT", false),
-      NVARCHAR("NVARCHAR", true, "TEXT", false),
-      TEXT("TEXT", false, "TEXT", false),
-      CLOB("CLOB", false, "TEXT", false),
-
-      REAL("REAL", false, "REAL", false),
-      DOUBLE("DOUBLE", false, "REAL", false),
-      DOUBLE_PRECISION("DOUBLE PRECISION", false, "REAL", false),
-      FLOAT("FLOAT ", false, "REAL", false),
-
-      NUMERIC("NUMERIC", false, "NUMERIC", false),
-      DECIMAL("DECIMAL", true, "NUMERIC", false),
-      BOOLEAN("BOOLEAN", false, "NUMERIC", false),
-      DATE("DATE", false, "NUMERIC", false),
-      DATETIME("DATETIME", false, "NUMERIC", false),
-
+    val digest by lazy {
+      parent?.init?.invoke(this)
+      init()
+      return@lazy Digest(types.toMap(), auto, index, unique, indices, uniques, primaryKeys)
     }
+
+    private val types = mutableListOf<Pair<KProperty1<out ActiveRecord, Any?>, TypeInfo>>()
+    private val auto = mutableListOf<KProperty1<out ActiveRecord, Any?>>()
+    private val unique = mutableListOf<KProperty1<out ActiveRecord, Any?>>()
+    private val index = mutableListOf<KProperty1<out ActiveRecord, Any?>>()
+    private val primaryKeys = mutableListOf<KProperty1<out ActiveRecord, Any?>>()
+    private val uniques = mutableListOf<Item>()
+    private val indices = mutableListOf<Item>()
+
+    fun autoIncrement(vararg property: KProperty1<out ActiveRecord, Any?>) = auto.plusAssign(property)
+
+    fun unique(block: CollectionContext.() -> Unit) = CollectionContext(uniques).block()
+    fun unique(property: KProperty1<out ActiveRecord, Any?>) {
+      val field = Field(property)
+      uniques.add(Item(field.name, listOf(field)))
+    }
+
+    fun <T : ActiveRecord> uniqueGroup(name: String, vararg properties: KProperty1<T, Any?>) {
+      uniques.add(Item(name, properties.map(::Field)))
+    }
+
+    fun index(block: CollectionContext.() -> Unit) = CollectionContext(indices).block()
+    fun index(property: KProperty1<out ActiveRecord, Any?>) {
+      val field = Field(property)
+      indices.add(Item(field.name, listOf(field)))
+    }
+
+    fun <T : ActiveRecord> indexGroup(name: String, vararg properties: KProperty1<T, Any?>) {
+      indices.add(Item(name, properties.map(::Field)))
+    }
+
+    fun primaryKey(property: KProperty1<out ActiveRecord, Any?>) {
+      primaryKeys += property
+    }
+
+    class Item(val name: String, val fields: List<Field>)
+
+    class CollectionContext(val collection: MutableCollection<Item>) {
+      operator fun KProperty1<out ActiveRecord, Any?>.unaryPlus() {
+        val field = Field(this)
+        collection.add(Item(field.name, listOf(field)))
+      }
+
+      fun <T : ActiveRecord> group(name: String, vararg properties: KProperty1<T, Any?>) {
+        collection.add(Item(name, properties.map(::Field)))
+      }
+    }
+
+    infix fun KProperty1<out ActiveRecord, Any?>.use(type: TypeInfo) = types.plusAssign(this to type)
+    fun type(type: Type) = TypeInfo(type, null, null)
+    fun type(type: Type, param: Int) = TypeInfo(type, param, null)
+    fun type(type: Type, param1: Int, param2: Int): TypeInfo = TypeInfo(type, param1, param2)
+
+    data class TypeInfo(val type: Type, val param1: Int?, val param2: Int?) {
+      fun toString(database: Database?): String = type.toString(database, param1, param2)
+    }
+
+    fun extend(init: Metadata.() -> Unit) = Metadata(this, init)
+
+    class Digest(
+      val types: Map<KProperty1<out ActiveRecord, Any?>, TypeInfo>,
+      val auto: MutableList<KProperty1<out ActiveRecord, Any?>>,
+      val index: MutableList<KProperty1<out ActiveRecord, Any?>>,
+      val unique: MutableList<KProperty1<out ActiveRecord, Any?>>,
+      val indices: MutableList<Item>,
+      val uniques: MutableList<Item>,
+      val primaryKeys: MutableList<KProperty1<out ActiveRecord, Any?>>
+    )
   }
 }
