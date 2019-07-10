@@ -15,13 +15,13 @@ open class DBManyReference<T : ActiveRecord>(
   override val table: String?,
   override val key: String?,
   override val referenceKey: String?,
-  override val klass: KClass<T>
+  override val kClass: KClass<T>
 ) : ReadOnlyProperty<ActiveRecord, DatabaseList<T>>, ICreateSQL, IManyReference<T>, IOrdering<T, DBManyReference<T>> {
   lateinit var list: DatabaseList<T>
 
   override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): DatabaseList<T> {
     if (!::list.isInitialized)
-      list = DatabaseList(thisRef.database, thisRef, getShallowInstance(klass), Field(property), table, key, referenceKey)
+      list = DatabaseList(thisRef.database, thisRef, getShallowInstance(kClass), Field(property), table, key, referenceKey)
     return list
   }
 

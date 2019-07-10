@@ -1,5 +1,3 @@
-@file:Suppress("unused")
-
 package io.opencubes.sql
 
 import io.opencubes.sql.delegates.*
@@ -24,7 +22,14 @@ import kotlin.reflect.jvm.javaField
  * [ActiveRecord.referenceMany], [ActiveRecord.receiveMany]
  */
 abstract class ActiveRecord private constructor(table: String?, private val _database: Database?) {
+  /**
+   * The name this model has in the database.
+   */
   val table: String = table ?: tableCache.computeIfAbsent(this::class, ::resolveTable)
+  /**
+   * The database used when doing queries for the
+   * instances of the model.
+   */
   val database: Database
     get() = _database ?: Database.global
     ?: throw Exception(
@@ -61,11 +66,19 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    */
   constructor() : this(null, null)
 
-  @Transient
+  /**
+   * The metadata object representing this instance.
+   */
   open val metadata: Metadata? = null
 
   /**
-   * All fields in the model excluding indices.
+   * All fields in the model that is recognised as a column. It
+   * is also sorted to have the primary key first with references
+   * after. They are first sorted by name.
+   *
+   * What disqualifies any property from being picked up is when
+   * its value is not a delegate that implements the [IPropertyWithType]
+   * interface.
    */
   @Suppress("UNCHECKED_CAST")
   val fields by lazy {
@@ -75,25 +88,26 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
       .filter { it.javaField?.type?.kotlin?.isSubclassOf(IPropertyWithType::class) == true }
       .map(::Field)
       .sortedBy { it.property.name }
-      .sortedBy {
-        when (it.getDelegate(this)) {
-          is DBReference<*>, is DBReferenceNull<*> -> false
-          else -> true
-        }
-      }
+      .sortedBy { it.getDelegate(this) !is IReferenceType<*> }
       .sortedBy {
         metadata?.digest?.primaryKeys?.contains(it.property) == false && it.property.name != "id"
       }
       .toList()
   }
 
+  /**
+   * The field that is recognised as the id column.
+   *
+   * It is used mainly when being referenced from a different
+   * table.
+   */
   val idField: Field by lazy {
     fields.find {
       metadata?.digest?.primaryKeys?.contains(it.property) == true
     } ?: fields.find {
       it.property.name == "id"
     } ?: throw IllegalStateException(
-      "The  table does not have an id column. Make a property the primary key or create a property with the name `id`"
+      "The table does not have an id column. Make a property the primary key or create a property with the name `id`"
     )
   }
 
@@ -139,6 +153,14 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
     database.deleteFrom(table, listOf(idField.name), listOf(idField.getValue(this)))
   }
 
+  /**
+   * Set a value for the table that might be immutable.
+   *
+   * This method is supposed to only be called in the construction
+   * of a model instance.
+   *
+   * @param value The value to set.
+   */
   protected fun <R : Any?> KProperty0<R>.set(value: R) {
     val field = Field(this)
     field.setValue(this@ActiveRecord, value)
@@ -150,8 +172,14 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
     private val tableCache = mutableMapOf<KClass<*>, String>()
     private const val vowels = "aouåeiyäö"
 
-    private fun resolveTable(klass: KClass<*>): String {
-      val name = klass.java.simpleName.toSnakeCase()
+    /**
+     * A function that generates the plural form of a word (the model name)
+     * with great accuracy. Though there are exceptions.
+     *
+     * @param kClass The class to generate the name for
+     */
+    private fun resolveTable(kClass: KClass<*>): String {
+      val name = kClass.java.simpleName.toSnakeCase()
       return if (
         name.endsWith("ss") || name.endsWith("s") ||
         name.endsWith("sh") || name.endsWith("ch") ||
@@ -164,6 +192,15 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
       else "${name}s"
     }
 
+    /**
+     * Get a name of a link table based on a might be specified [table] name variable,
+     * the [property] requiring the table, and the linking tables.
+     *
+     * @param table The possibly specified table name.
+     * @param property The property that requires the table.
+     * @param first The first table to connect.
+     * @param second The second table to connect.
+     */
     fun getLinkTableName(table: String?, property: KProperty<*>, first: ActiveRecord, second: ActiveRecord): String {
       return when {
         table != null -> table
@@ -176,7 +213,7 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
       }
     }
 
-    // ------------------------------------------ Instance creations ---------------------------------------------------
+    // ---------------------------------------------- Instance creations -----------------------------------------------
 
     /**
      * This function will create a instance of the specified [kClass].
@@ -378,50 +415,52 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
     inline fun <reified AR : ActiveRecord> findAllLike(column: KProperty1<AR, *>, value: Any?): List<AR> =
       findAllLike(AR::class, column, value)
 
-    fun <AR : ActiveRecord> getAll(kClass: KClass<out AR>): List<AR> {
-      val usableInstance = getShallowInstance(kClass)
+    /**
+     * Get all available objects form the [AR] model specified.
+     *
+     * @param table Which objects to retrieve.
+     */
+    fun <AR : ActiveRecord> getAll(table: KClass<out AR>): List<AR> {
+      val usableInstance = getShallowInstance(table)
       return usableInstance.database
         .select(*Field.nameArray(usableInstance.fields))
         .from(usableInstance.table)
         .execute()
-        .fetchAllInto(kClass)
+        .fetchAllInto(table)
     }
 
+    /**
+     * Get all available objects form the [AR] model specified.
+     *
+     * @param AR Which objects to retrieve.
+     */
     inline fun <reified AR : ActiveRecord> getAll() = getAll(AR::class)
 
     // --------------------------------------------- Table Helpers -----------------------------------------------------
 
-    /**FIXME
-     * Creates a table from the specified model class. This will analyze the model
-     * and search for indices, fields, auto increment values and references.
+    /**
+     * Creates a table from the specified table class.
      *
-     * - Properties marked by annotation [Exclude] will not be included.
-     * - All fields marked with val/only has a getter
-     *   will be considered to be a indexable value.
-     * - Any field delegated by a [DBReference] will become a foreign key
-     *   reference.
-     *
-     * @param model The model class to create the table for.
+     * @param table The table to create.
      */
     @JvmStatic
-    fun create(model: KClass<out ActiveRecord>) {
-      getShallowInstance(model).database.execute(genSQL(model))
+    fun create(table: KClass<out ActiveRecord>) {
+      getShallowInstance(table).database.execute(genSQL(table))
     }
 
-    /**FIXME
-     * Creates a table from the specified model class. This will analyze the model
-     * and search for indices, fields, auto increment values and references.
+    /**
+     * Creates a table from the specified model class.
      *
-     * - Properties marked by annotation [Exclude] will not be included.
-     * - All fields marked with val/only has a getter or has a annotation
-     *   will be considered to be a indexable value.
-     * - Any field delegated by a [DBReference] will become a foreign key
-     *   reference.
-     *
+     * @param AR The table to create.
      */
     @JvmStatic
     inline fun <reified AR : ActiveRecord> create() = create(AR::class)
 
+    /**
+     * Creates the tables specified in the databases they are associated with.
+     *
+     * @param tables The tables to create.
+     */
     @JvmStatic
     fun create(vararg tables: KClass<out ActiveRecord>) {
       if (tables.isNotEmpty()) {
@@ -446,10 +485,16 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
       }
     }
 
+    /**
+     * Generates the string used to create the table in question with
+     * any link tables required.
+     *
+     * @param modelKClass The table to generate the ddl for.
+     */
     @JvmStatic
     @Suppress("UNCHECKED_CAST")
-    fun genSQL(model: KClass<out ActiveRecord>): String {
-      val instance = getShallowInstance(model)
+    fun genSQL(modelKClass: KClass<out ActiveRecord>): String {
+      val instance = getShallowInstance(modelKClass)
       val table = instance.table
 
       val sqlFields = instance.fields
@@ -484,26 +529,22 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
         }
       }
 
-//      val primaryLine = if (primary != null)
-//        "\n\n  CONSTRAINT ${instance.table}_pk PRIMARY KEY (${primary.name})"
-//      else ""
-
       val indicesLine =
         if (instance.database.isSQLite) ""
         else {
           val digestIndices = instance.metadata?.digest?.indices
-            ?.filter { it.fields[0].property in model.members }
+            ?.filter { it.fields[0].property in modelKClass.members }
             ?: emptyList()
           val modelIndices = instance.fields
             .filter { it.getDelegate(instance) is IReferenceType<*> }
             .map { Metadata.Item(it.name, listOf(it)) }
-          val sortIndices = model.memberProperties
+          val sortIndices = modelKClass.memberProperties
             .asSequence()
             .map(::Field)
             .map { it to (it.getDelegate(instance) as? IOrdering<*, *>) }
             .filter {
               it.second != null && it.second?.orders?.isNotEmpty() ?: false && it.second?.orders?.all { o ->
-                o.first in model.memberProperties
+                o.first in modelKClass.memberProperties
               } ?: false
             }
             .map { (field, delegate) ->
@@ -513,11 +554,11 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
               )
             }
             .toList()
-          val outboundSortIndices = model.memberProperties
+          val outboundSortIndices = modelKClass.memberProperties
             .map(::Field)
             .mapNotNull { it.getDelegate(instance) as? ITableReference<*> }
             .flatMap {
-              it.klass.memberProperties
+              it.kClass.memberProperties
                 .map(::Field)
                 .mapNotNull { f ->
                   try {
@@ -529,7 +570,7 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
             }
             .filter {
               it.second != null && it.second?.orders?.isNotEmpty() ?: false && it.second?.orders?.all { o ->
-                o.first in model.memberProperties
+                o.first in modelKClass.memberProperties
               } ?: false
             }
             .map { (field, delegate) ->
@@ -554,7 +595,7 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
         }
       val uniquesLine = run {
         val digestUniques = instance.metadata?.digest?.uniques
-          ?.filter { it.fields[0].property in model.members }
+          ?.filter { it.fields[0].property in modelKClass.members }
           ?: emptyList()
         val uniquesList = digestUniques
           .toSet()
@@ -569,7 +610,7 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
         }
       }
 
-      val additional = model.memberProperties.mapNotNull { property ->
+      val additional = modelKClass.memberProperties.mapNotNull { property ->
         val field = Field(property)
         if (field in instance.fields) return@mapNotNull null
         val delegate = field.getDelegate(instance) as? ICreateSQL ?: return@mapNotNull null
@@ -579,16 +620,27 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
       return "CREATE TABLE $table (\n  " +
         sqlFields +
         indicesLine +
-//        primaryLine +
         uniquesLine +
         foreign +
         "\n);" +
         (if (additional.isNotEmpty()) "\n\n" else "") + additional.joinToString("\n\n")
     }
 
+    /**
+     * Generates the string used to create the table in question with
+     * any link tables required.
+     *
+     * @param AR The table to generate the ddl for.
+     */
     @JvmStatic
     inline fun <reified AR : ActiveRecord> genSQL() = genSQL(AR::class)
 
+    /**
+     * Generates the string used to create the tables in question with
+     * any link tables required.
+     *
+     * @param tables The tables to generate the ddl for.
+     */
     @JvmStatic
     fun genSQL(vararg tables: KClass<out ActiveRecord>): String {
       return if (tables.isEmpty()) "" else tables
@@ -610,6 +662,21 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
         .joinToString("\n\n")
     }
 
+    /**
+     * Migrates a database schema/catalog to the new version. Calculating
+     * differences and applying steps to get the model in the database up
+     * to date.
+     *
+     * These differences can be dropping, creating, modifying properties,
+     * indices, unique indices, and foreign keys. It can and will also
+     * create missing tables, but not delete loose tables.
+     *
+     * When specifying tables to migrate this method does do it for every
+     * unique database connection grouped by the connection on the models.
+     *
+     * @param tables The tables/models to migrate to the new version.
+     */
+    @JvmStatic
     fun migrate(vararg tables: KClass<out ActiveRecord>) {
       //TODO Rename tables?
       val dbToTables = mutableMapOf<Database, MutableSet<KClass<out ActiveRecord>>>()
@@ -866,7 +933,6 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
       val l = line.trimStart(' ')
       return !l.startsWith("FOREIGN") && !l.startsWith("UNIQUE") && !l.startsWith("INDEX")
     }
-
     private fun getNameOfColumnLine(line: String): String = line.split(' ').filter(String::isNotBlank)[0]
     private fun recreate(oldSQL: String, newSQL: String): String {
       val normalName = newSQL.substring(13, newSQL.indexOf(' ', 14))
@@ -886,6 +952,12 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
         "ALTER TABLE $tempName RENAME TO $normalName;"
     }
 
+    /**
+     * Clears all data in the tables specified.
+     *
+     * @param tables The tables to erase the data for.
+     */
+    @JvmStatic
     fun clearAllDataFrom(vararg tables: KClass<out ActiveRecord>) {
       if (tables.isNotEmpty()) {
         val tableToInstance = mutableMapOf<KClass<out ActiveRecord>, ActiveRecord>()
@@ -980,6 +1052,15 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
     if (null is T) DBReferenceNull<ActiveRecord>(T::class as KClass<out ActiveRecord>, null) as IReferenceType<T>
     else DBReference<ActiveRecord>(T::class as KClass<out ActiveRecord>, null) as IReferenceType<T>
 
+  /**
+   * Reference a [column] from another table where the reference can be null
+   * if specified.
+   *
+   * If the underlying name of the column is unsatisfactory you can
+   * specify it with the [SerializedName] annotation.
+   *
+   * @param T The type of the referenced ActiveRecord.
+   */
   @Suppress("UNCHECKED_CAST")
   protected inline fun <reified T : ActiveRecord?> reference(column: KProperty1<T, *>): IReferenceType<T> =
     if (null is T) DBReferenceNull(T::class as KClass<out ActiveRecord>, column as KProperty1<ActiveRecord, *>) as IReferenceType<T>
@@ -1036,9 +1117,8 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    * @param F The type of the reference ActiveRecord.
    * @return A delegate for a semi live list of the values.
    */
-  protected fun <F : ActiveRecord, T : ActiveRecord> referenceMany(reverse: KProperty1<F, DatabaseList<T>>): DBManyReferenceReverse<F, T> {
-    return DBManyReferenceReverse(reverse)
-  }
+  protected fun <F : ActiveRecord, T : ActiveRecord> referenceMany(reverse: KProperty1<F, DatabaseList<T>>): DBManyReferenceReverse<F, T> =
+    DBManyReferenceReverse(reverse)
 
   /**
    * Reference all/many of the records the [reference] is referencing by the
@@ -1075,6 +1155,9 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
 
   // ------------------------------------------------- Metadata --------------------------------------------------------
 
+  /**
+   * A SQL type represented in normal sql and in SQLite.
+   */
   enum class Type(val sqlType: String, val usesSize: Boolean, val sqliteType: String, val sqliteUsesSize: Boolean) {
 
     INT("INT", false, "INTEGER", false),
@@ -1126,79 +1209,151 @@ abstract class ActiveRecord private constructor(table: String?, private val _dat
    * incremented.
    */
   class Metadata private constructor(private val parent: Metadata?, private val init: Metadata.() -> Unit) {
+    /**
+     * Create a new metadata instance.
+     */
     constructor(init: Metadata.() -> Unit) : this(null, init)
 
+    /**
+     * A digest instance representing this metadata.
+     */
     val digest by lazy {
       parent?.init?.invoke(this)
       init()
-      return@lazy Digest(types.toMap(), auto, index, unique, indices, uniques, primaryKeys)
+      return@lazy Digest(types.toMap(), auto, indices, uniques, primaryKeys)
     }
 
     private val types = mutableListOf<Pair<KProperty1<out ActiveRecord, Any?>, TypeInfo>>()
     private val auto = mutableListOf<KProperty1<out ActiveRecord, Any?>>()
-    private val unique = mutableListOf<KProperty1<out ActiveRecord, Any?>>()
-    private val index = mutableListOf<KProperty1<out ActiveRecord, Any?>>()
     private val primaryKeys = mutableListOf<KProperty1<out ActiveRecord, Any?>>()
     private val uniques = mutableListOf<Item>()
     private val indices = mutableListOf<Item>()
 
+    /**
+     * Specify a property to be automatically incremented when
+     * new rows are created.
+     */
     fun autoIncrement(vararg property: KProperty1<out ActiveRecord, Any?>) = auto.plusAssign(property)
 
+    /**
+     * Setup a context where unique index items can be added.
+     */
     fun unique(block: CollectionContext.() -> Unit) = CollectionContext(uniques).block()
+
+    /**
+     * Add a unique index item group by a single property.
+     */
     fun unique(property: KProperty1<out ActiveRecord, Any?>) {
       val field = Field(property)
       uniques.add(Item(field.name, listOf(field)))
     }
 
+    /**
+     * Add a unique index item group.
+     */
     fun <T : ActiveRecord> uniqueGroup(name: String, vararg properties: KProperty1<T, Any?>) {
       uniques.add(Item(name, properties.map(::Field)))
     }
 
+    /**
+     * Setup a context where index items can be added.
+     */
     fun index(block: CollectionContext.() -> Unit) = CollectionContext(indices).block()
+
+    /**
+     * Add a index item group by a single property.
+     */
     fun index(property: KProperty1<out ActiveRecord, Any?>) {
       val field = Field(property)
       indices.add(Item(field.name, listOf(field)))
     }
 
+    /**
+     * Add a index item group.
+     */
     fun <T : ActiveRecord> indexGroup(name: String, vararg properties: KProperty1<T, Any?>) {
       indices.add(Item(name, properties.map(::Field)))
     }
 
+    /**
+     * Set the primary key for a model with the specified property.
+     */
     fun primaryKey(property: KProperty1<out ActiveRecord, Any?>) {
       primaryKeys += property
     }
 
-    class Item(val name: String, val fields: List<Field>)
+    /**
+     * A item representing a group with a name.
+     */
+    class Item(
+      /** The name of the item. */
+      val name: String,
+      /** The fields the item represents. */
+      val fields: List<Field>
+    )
 
+    /**
+     * A context for a collection for adding [items][Item] to a collection.
+     */
     class CollectionContext(val collection: MutableCollection<Item>) {
+      /**
+       * Add a item by one property.
+       */
       operator fun KProperty1<out ActiveRecord, Any?>.unaryPlus() {
         val field = Field(this)
         collection.add(Item(field.name, listOf(field)))
       }
 
+      /**
+       * Add a item group by a some [properties] and represent the group by the [name].
+       */
       fun <T : ActiveRecord> group(name: String, vararg properties: KProperty1<T, Any?>) {
         collection.add(Item(name, properties.map(::Field)))
       }
     }
 
+    /** Setup a model property with a type. */
     infix fun KProperty1<out ActiveRecord, Any?>.use(type: TypeInfo) = types.plusAssign(this to type)
+    /** Creates a [TypeInfo] from a [type] and no parameters. */
     fun type(type: Type) = TypeInfo(type, null, null)
+    /** Creates a [TypeInfo] from a [type] and one parameter. */
     fun type(type: Type, param: Int) = TypeInfo(type, param, null)
+    /** Creates a [TypeInfo] from a [type] and two parameters. */
     fun type(type: Type, param1: Int, param2: Int): TypeInfo = TypeInfo(type, param1, param2)
 
-    data class TypeInfo(val type: Type, val param1: Int?, val param2: Int?) {
+    /**
+     * A representation of a type definition.
+     */
+    data class TypeInfo(
+      /** The overall type */
+      val type: Type,
+      /** The first parameter for the type if required. */
+      val param1: Int?,
+      /** The second parameter for the type if required. */
+      val param2: Int?
+    ) {
       fun toString(database: Database?): String = type.toString(database, param1, param2)
     }
 
+    /**
+     * Create a new metadata instance with some extended data
+     * about types, primary keys, indices, and unique indices.
+     */
     fun extend(init: Metadata.() -> Unit) = Metadata(this, init)
 
+    /**
+     * A representation of a finalized metadata object.
+     */
     class Digest(
+      /** The model types this metadata digest represents. */
       val types: Map<KProperty1<out ActiveRecord, Any?>, TypeInfo>,
+      /** The automatically incremented model column this metadata digest represents. */
       val auto: MutableList<KProperty1<out ActiveRecord, Any?>>,
-      val index: MutableList<KProperty1<out ActiveRecord, Any?>>,
-      val unique: MutableList<KProperty1<out ActiveRecord, Any?>>,
+      /** The indices this metadata digest represents. */
       val indices: MutableList<Item>,
+      /** The unique indices this metadata digest represents. */
       val uniques: MutableList<Item>,
+      /** The primary keys this metadata digest represents. */
       val primaryKeys: MutableList<KProperty1<out ActiveRecord, Any?>>
     )
   }

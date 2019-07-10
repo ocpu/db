@@ -5,15 +5,18 @@ import io.opencubes.sql.Field
 import io.opencubes.sql.ICreateSQL
 import kotlin.reflect.KProperty
 
+/**
+ * A property value that can be null.
+ */
 open class DBValueNullable<T> : IPropertyWithType<T?>, ICreateSQL {
   /** The current value */
   private var value: T? = null
   override val type = IPropertyWithType.Type.VALUE
 
-  /***/
+  /** @see kotlin.properties.ReadWriteProperty.getValue */
   override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): T? = value
 
-  /***/
+  /** @see kotlin.properties.ReadWriteProperty.setValue */
   override fun setValue(thisRef: ActiveRecord, property: KProperty<*>, value: T?) {
     if (value == null) {
       this.value = null

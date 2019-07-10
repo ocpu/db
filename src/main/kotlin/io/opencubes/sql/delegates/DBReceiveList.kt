@@ -10,6 +10,11 @@ import kotlin.properties.ReadOnlyProperty
 import kotlin.reflect.KProperty
 import kotlin.reflect.KProperty1
 
+/**
+ * From a reference list map all objects to get a different result.
+ *
+ * @see ActiveRecord.receiveMany
+ */
 open class DBReceiveList<R : ActiveRecord, T : ActiveRecord>(
   from: KProperty1<out ActiveRecord, DatabaseList<in T>>,
   mapper: KProperty1<in R, T>
@@ -23,7 +28,7 @@ open class DBReceiveList<R : ActiveRecord, T : ActiveRecord>(
     val listDelegate = this.by.getDelegate() as IManyReference<T>
 
     val fromTable = this.from.instance
-    val toTable = ActiveRecord.getShallowInstance(listDelegate.klass)
+    val toTable = ActiveRecord.getShallowInstance(listDelegate.kClass)
     val linkTable = ActiveRecord.getLinkTableName(listDelegate.table, this.by.property, this.by.instance, this.from.instance)
 
     val toName = listDelegate.key ?: "${
@@ -47,7 +52,7 @@ open class DBReceiveList<R : ActiveRecord, T : ActiveRecord>(
 
   override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): List<R> =
     try {
-      select.execute(thisRef.idField.getValue(thisRef)).fetchAllInto(from.klass())
+      select.execute(thisRef.idField.getValue(thisRef)).fetchAllInto(from.kClass())
     } catch (_: InvocationTargetException) {
       throw Exception("${thisRef.javaClass.simpleName} primary key property is not defined")
     }

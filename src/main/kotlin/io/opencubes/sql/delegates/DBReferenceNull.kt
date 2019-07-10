@@ -8,12 +8,17 @@ import kotlin.reflect.KClass
 import kotlin.reflect.KProperty
 import kotlin.reflect.KProperty1
 
-open class DBReferenceNull<T : ActiveRecord>(override val klass: KClass<out ActiveRecord>, field: KProperty1<T, *>?) : IReferenceType<T?>, IInjectable, ICreateSQL {
+/**
+ * A basic reference to a different object/table that can be null.
+ */
+open class DBReferenceNull<T : ActiveRecord>(override val kClass: KClass<out ActiveRecord>, field: KProperty1<T, *>?) : IReferenceType<T?>, IInjectable, ICreateSQL {
+  /** A instance of the referenced table. */
+  val instance by lazy { ActiveRecord.getShallowInstance(kClass) }
+  /** The current value */
   var value: Any? = null
-  val instance by lazy { ActiveRecord.getShallowInstance(klass) }
   override val field by lazy { Field(field) ?: instance.idField }
-  override var action: DeleteAction = DeleteAction.NO_ACTION
-  val select by lazy {
+  override var action: DeleteAction = DeleteAction.SET_NULL
+  private val select by lazy {
     instance.database
       .select(*instance.fields.map { "t1.${it.name}" }.toTypedArray())
       .from("${instance.table} t1")
@@ -22,9 +27,12 @@ open class DBReferenceNull<T : ActiveRecord>(override val klass: KClass<out Acti
       .compile()
   }
 
+  /** @see kotlin.properties.ReadWriteProperty.getValue */
+  @Suppress("UNCHECKED_CAST")
   override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): T? =
-    if (value == null) null else select.execute(value).fetchInto(klass) as T?
+    if (value == null) null else select.execute(value).fetchInto(kClass) as T?
 
+  /** @see kotlin.properties.ReadWriteProperty.setValue */
   override fun setValue(thisRef: ActiveRecord, property: KProperty<*>, value: T?) {
     if (value == null)
       this.value = null

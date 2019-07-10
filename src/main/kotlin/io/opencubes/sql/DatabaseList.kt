@@ -14,8 +14,11 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
   private val cache = LinkedList<T>()
   private var created = false
   private var firstTimeAccess = true
+  /**
+   * The name of the link table the links are stored.
+   */
   val linkTable by lazy { ActiveRecord.getLinkTableName(customTableName, listField.property, fromTable, toTable) }
-  val toName by lazy {
+  private val toName by lazy {
     customToPropertyName ?: "${
     if (toTable.table == fromTable.table) linkTable
     else toTable.javaClass.simpleName.toSnakeCase()
@@ -40,7 +43,13 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
 
     ).sortedBy(Triple<String, Field, ActiveRecord>::first)
   }
+  /**
+   * The columns the link table has.
+   */
   val columns by lazy { properties.map(Triple<String, Field, ActiveRecord>::first).toTypedArray() }
+  /**
+   * The sql link table creation definition.
+   */
   val tableSQL by lazy {
     val fpn = properties[0].first
     val spn = properties[1].first
@@ -56,7 +65,7 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
       "  CONSTRAINT ${linkTable}_fk_$spn FOREIGN KEY ($spn) REFERENCES ${properties[0].third.table} (${properties[0].second.name})\n" +
       "); -- Link table"
   }
-  val select by lazy {
+  private val select by lazy {
     val other = if (properties[0].first == toName) properties[1].first else properties[0].first
 
     database
@@ -65,14 +74,6 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
       .join("$linkTable t2", "t1.${toTable.idField.name} = t2.$toName")
       .where("t2.$other = ?")
   }
-  val generalTable = Compound.GeneralTable(
-    name = linkTable,
-    properties = listOf(
-      Compound.GeneralTableProperty(properties[0].first, properties[0].second.getSQLType(database)),
-      Compound.GeneralTableProperty(properties[1].first, properties[1].second.getSQLType(database))
-    ),
-    links = listOf()
-  )
 
   /**
    * Refreshes the element cache to what it currently is in the database.
@@ -95,23 +96,28 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
     )
   }
 
+  /** @see MutableList.size */
   override val size: Int get() = cache.size
 
+  /** @see MutableList.contains */
   override fun contains(element: T): Boolean {
     if (firstTimeAccess) refresh()
     return cache.contains(element)
   }
 
+  /** @see MutableList.containsAll */
   override fun containsAll(elements: Collection<T>): Boolean {
     if (firstTimeAccess) refresh()
     return cache.containsAll(elements)
   }
 
+  /** @see MutableList.isEmpty */
   override fun isEmpty(): Boolean {
     if (firstTimeAccess) refresh()
     return cache.isEmpty()
   }
 
+  /** @see MutableList.add */
   override fun add(element: T): Boolean {
     if (firstTimeAccess) refresh()
     return try {
@@ -122,6 +128,7 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
     }
   }
 
+  /** @see MutableList.addAll */
   override fun addAll(elements: Collection<T>): Boolean {
     if (firstTimeAccess) refresh()
     return try {
@@ -135,14 +142,17 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
     }
   }
 
+  /** @see MutableList.clear */
   override fun clear() {
     val other = if (properties[0].first == toName) properties[1] else properties[0]
     database.deleteFrom(linkTable, listOf(other.first), listOf(other.second.getValue(other.third)))
     cache.clear()
   }
 
+  /** @see MutableList.iterator */
   override fun iterator() = cache.iterator()
 
+  /** @see MutableList.remove */
   override fun remove(element: T): Boolean {
     if (firstTimeAccess) refresh()
     return try {
@@ -153,6 +163,7 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
     }
   }
 
+  /** @see MutableList.removeAll */
   override fun removeAll(elements: Collection<T>): Boolean {
     if (firstTimeAccess) refresh()
     return try {
@@ -166,8 +177,10 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
     }
   }
 
+  /** @see MutableList.retainAll */
   override fun retainAll(elements: Collection<T>) = removeAll(cache.filter { it !in elements })
 
+  /** @see MutableList.add */
   override fun add(index: Int, element: T) {
     if (firstTimeAccess) refresh()
     add(element)
@@ -175,35 +188,43 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
     cache.removeLast()
   }
 
+  /** @see MutableList.addAll */
   override fun addAll(index: Int, elements: Collection<T>): Boolean = addAll(elements)
 
+  /** @see MutableList.get */
   override fun get(index: Int): T {
     if (firstTimeAccess) refresh()
     return cache[index]
   }
 
+  /** @see MutableList.indexOf */
   override fun indexOf(element: T): Int {
     if (firstTimeAccess) refresh()
     return cache.indexOf(element)
   }
 
+  /** @see MutableList.lastIndexOf */
   override fun lastIndexOf(element: T): Int {
     if (firstTimeAccess) refresh()
     return cache.lastIndexOf(element)
   }
 
+  /** @see MutableList.listIterator */
   override fun listIterator(): MutableListIterator<T> {
     if (firstTimeAccess) refresh()
     return cache.listIterator()
   }
 
+  /** @see MutableList.listIterator */
   override fun listIterator(index: Int): MutableListIterator<T> {
     if (firstTimeAccess) refresh()
     return cache.listIterator(index)
   }
 
+  /** @see MutableList.removeAt */
   override fun removeAt(index: Int): T = cache.removeAt(index).also(ActiveRecord::delete)
 
+  /** @see MutableList.set */
   override fun set(index: Int, element: T): T {
     if (firstTimeAccess) refresh()
     val item = cache.set(index, element)
@@ -217,7 +238,9 @@ class DatabaseList<T : ActiveRecord>(private val database: Database,
     return item
   }
 
+  /** @see MutableList.subList */
   override fun subList(fromIndex: Int, toIndex: Int): MutableList<T> = throw Exception("Not supported")
 
+  /** @see MutableList.toString */
   override fun toString() = cache.toString()
 }
