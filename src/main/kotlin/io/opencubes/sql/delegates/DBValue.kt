@@ -10,12 +10,18 @@ import java.sql.Timestamp
 import java.text.SimpleDateFormat
 import kotlin.reflect.KProperty
 
+/**
+ * A basic value column with a value.
+ *
+ * @param valueClass The class the value has.
+ * @param default The factory function creating a default value.
+ */
 open class DBValue<T>(val valueClass: Class<T>, val default: (() -> T)? = null) : IPropertyWithType<T?>, IInjectable, ICreateSQL {
   /** The current value */
   private var value: T? = null
   override val type = IPropertyWithType.Type.VALUE
 
-  /***/
+  /** @see kotlin.properties.ReadWriteProperty.getValue */
   override fun getValue(thisRef: ActiveRecord, property: KProperty<*>): T {
     if (value == null)
       value = default?.invoke()
@@ -26,7 +32,7 @@ open class DBValue<T>(val valueClass: Class<T>, val default: (() -> T)? = null) 
     return value!!
   }
 
-  /***/
+  /** @see kotlin.properties.ReadWriteProperty.setValue */
   override fun setValue(thisRef: ActiveRecord, property: KProperty<*>, value: T?) {
     if (value == null)
       throw NullPointerException("value was null")
@@ -39,8 +45,17 @@ open class DBValue<T>(val valueClass: Class<T>, val default: (() -> T)? = null) 
   }
 
   companion object {
+    /**
+     * The format of a timestamp (ISO 8601).
+     */
     val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+    /**
+     * The format of a date.
+     */
     val dateFormat = SimpleDateFormat("yyyy-MM-dd")
+    /**
+     * The format of time.
+     */
     val timeFormat = SimpleDateFormat("HH:mm:ss")
   }
 
@@ -63,6 +78,7 @@ open class DBValue<T>(val valueClass: Class<T>, val default: (() -> T)? = null) 
         instance.metadata?.digest?.primaryKeys?.contains(it.property) == true
       } != null || property.name == "id"
     ) " PRIMARY KEY" else ""
+    @Suppress("SpellCheckingInspection")
     val autoIncrement =
       if (instance.metadata?.digest?.auto?.any { it == property } == true)
         if (instance.database.isSQLite) " DEFAULT rowid"

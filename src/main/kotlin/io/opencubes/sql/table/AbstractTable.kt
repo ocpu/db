@@ -2,20 +2,53 @@ package io.opencubes.sql.table
 
 import io.opencubes.sql.delegates.DeleteAction
 
+/**
+ * A abstract representation of a table with a [name], possible [primary key][primaryKey],
+ * and a list of [properties], [indices], [uniques indices][uniques], and
+ * [foreignKeys].
+ */
 data class AbstractTable(
+  /**
+   * The name of the table
+   */
   val name: String,
+  /**
+   * The properties the table consists of.
+   */
   val properties: List<AbstractTableProperty>,
+  /**
+   * The primary key the table has that represents it.
+   */
   val primaryKey: AbstractTableIndex?,
+  /**
+   * The list of indices the table has.
+   */
   val indices: List<AbstractTableIndex>,
+  /**
+   * The list of unique indices the table has.
+   */
   val uniques: List<AbstractTableIndex>,
+  /**
+   * The list of foreign keys the table has.
+   */
   val foreignKeys: List<AbstractForeignKey>
 ) {
   companion object {
     private val escapees = Regex("^[\"'`]|[\"'`]$")
 
-    private fun splitParenList(str: String) = Regex("""\(([^)]+)\)""").find(str)?.destructured?.component1()?.split(Regex(",\\s*"))
-      ?: emptyList()
+    private fun splitParenList(str: String) =
+      Regex("""\(([^)]+)\)""")
+        .find(str)
+        ?.destructured
+        ?.component1()
+        ?.split(Regex(",\\s*"))
+        ?: emptyList()
 
+    /**
+     * Create a [AbstractTable] instance from a table declaration.
+     *
+     * Used by [ActiveRecord.migrate][io.opencubes.sql.ActiveRecord.migrate]
+     */
     fun fromSQLSource(source: String): AbstractTable {
       val split = source.split(Regex("[ \\n]+"), limit = 7)
       val lines = run {

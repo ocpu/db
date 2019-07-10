@@ -14,6 +14,8 @@ import kotlin.reflect.jvm.javaField
  * Wraps a result set to give easy access to extra metadata.
  *
  * @param resultSet The initial result set.
+ * @param stmt The statement that holds the query.
+ * @param database The database that executed the query.
  */
 class ResultSetWrapper(val resultSet: ResultSet?, val stmt: Statement, val database: Database) : Iterator<ResultSetWrapper>, AutoCloseable {
   /**
@@ -43,6 +45,9 @@ class ResultSetWrapper(val resultSet: ResultSet?, val stmt: Statement, val datab
 
   private var lastNext = true
 
+  /**
+   * @see AutoCloseable.close
+   */
   override fun close() = resultSet?.close() ?: Unit
 
   /**
@@ -164,10 +169,14 @@ class ResultSetWrapper(val resultSet: ResultSet?, val stmt: Statement, val datab
     return instance
   }
 
-  fun <R> map(transformer: (row: ResultSetWrapper) -> R): List<R> {
+  /**
+   * Returns a list containing the results of applying the given [transform] function
+   * to each element in the original collection.
+   */
+  fun <R> map(transform: (row: ResultSetWrapper) -> R): List<R> {
     val res = mutableListOf<R>()
     for (row in this)
-      res.add(transformer(row))
+      res.add(transform(row))
     return res.toList()
   }
 }

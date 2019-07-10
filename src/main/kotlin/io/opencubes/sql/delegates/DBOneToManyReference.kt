@@ -11,7 +11,7 @@ import kotlin.reflect.KProperty1
 
 open class DBOneToManyReference<T : ActiveRecord>(referenceKey: KProperty1<T, Any?>, limit: Int?) : ReadOnlyProperty<ActiveRecord, List<T>>, IOrdering<T, DBOneToManyReference<T>>, ITableReference<T> {
   val field = Field(referenceKey)
-  override val klass: KClass<T> = field.klass()
+  override val kClass: KClass<T> = field.kClass()
   @Suppress("UNCHECKED_CAST")
   val instance by lazy {
     field.instance as? T

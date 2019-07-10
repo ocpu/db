@@ -8,6 +8,9 @@ import java.sql.Blob
 import java.sql.SQLException
 import java.sql.SQLFeatureNotSupportedException
 
+/**
+ * A simple blob for when the driver does not ship one themselves.
+ */
 class SimpleBlob : Blob {
   private var bytes: ByteArray? = null
   private var closed = false
@@ -15,16 +18,18 @@ class SimpleBlob : Blob {
     val streamSize = size()
 
     if (streamSize < bytes?.size ?: 0)
-      write(bytes, streamSize, (bytes?.size ?: 0) - streamSize)
+      write(bytes!!, streamSize, (bytes?.size ?: 0) - streamSize)
 
     bytes = toByteArray()
   }
 
+  /** @see Blob.setBytes */
   override fun setBytes(pos: Long, bytes: ByteArray): Int {
     checkClosed()
     return setBytes(pos, bytes, 0, bytes.size)
   }
 
+  /** @see Blob.setBytes */
   override fun setBytes(pos: Long, bytes: ByteArray, offset: Int, len: Int): Int {
     checkClosed()
 
@@ -34,8 +39,10 @@ class SimpleBlob : Blob {
     return len
   }
 
+  /** @see Blob.length */
   override fun length(): Long = bytes?.size?.toLong() ?: 0L
 
+  /** @see Blob.setBinaryStream */
   override fun setBinaryStream(pos: Long): OutputStream {
     checkClosed()
     checkPos(pos)
@@ -44,26 +51,30 @@ class SimpleBlob : Blob {
     o.onClose(onClose)
 
     if (bytes != null)
-      o.write(bytes, 0, (pos - 1).toInt())
+      o.write(bytes!!, 0, (pos - 1).toInt())
 
     return o
   }
 
+  /** @see Blob.free */
   override fun free() {
     bytes = null
     closed = true
   }
 
+  /** @see Blob.position */
   override fun position(pattern: ByteArray?, start: Long): Long {
     throwNotSupported()
     return 0
   }
 
+  /** @see Blob.position */
   override fun position(pattern: Blob?, start: Long): Long {
     throwNotSupported()
     return 0
   }
 
+  /** @see Blob.getBytes */
   override fun getBytes(pos: Long, length: Int): ByteArray {
     checkClosed()
     checkPos(pos)
@@ -72,8 +83,10 @@ class SimpleBlob : Blob {
     return b.copyOfRange((pos - 1).toInt(), (length + pos - 1).toInt())
   }
 
+  /** @see Blob.getBinaryStream */
   override fun getBinaryStream(): InputStream = ByteArrayInputStream(bytes)
 
+  /** @see Blob.getBinaryStream */
   override fun getBinaryStream(pos: Long, length: Long): InputStream {
     checkClosed()
     checkPos(pos)
@@ -82,6 +95,7 @@ class SimpleBlob : Blob {
     return ByteArrayInputStream(bytes, (pos - 1).toInt(), length.toInt())
   }
 
+  /** @see Blob.truncate */
   override fun truncate(len: Long) {
     checkClosed()
     val b = bytes ?: throw SQLException("No bytes available")
@@ -104,11 +118,17 @@ class SimpleBlob : Blob {
     throw SQLFeatureNotSupportedException("The feature you want to use is not supported")
   }
 
+  /** A observable output stream that observes when it closes. */
   class ObservableOutputStream : ByteArrayOutputStream() {
     private var closeListener: (ObservableOutputStream.() -> Unit)? = null
+    /**
+     * Set a event handler for observing when it closes.
+     */
     fun onClose(listener: ObservableOutputStream.() -> Unit) {
       closeListener = listener
     }
+
+    /** @see InputStream.close */
     override fun close() {
       super.close()
       closeListener?.invoke(this)

@@ -80,6 +80,9 @@ class Database {
       return this
     }
 
+  /**
+   * Returns true if the database connection is of type SQLite.
+   */
   val isSQLite: Boolean
     get() = try {
       Class.forName("org.sqlite.SQLiteConnection")
@@ -88,6 +91,9 @@ class Database {
       false
     }
 
+  /**
+   * Returns true if the database connection is of type MySQL.
+   */
   val isMySQL: Boolean
     get() = try {
       Class.forName("com.mysql.cj.jdbc.ConnectionImpl")
@@ -96,6 +102,9 @@ class Database {
       false
     }
 
+  /**
+   * Returns true if the database connection is of type SQL Server.
+   */
   val isSQLServer: Boolean
     get() = try {
       Class.forName("com.microsoft.sqlserver.jdbc.SQLServerConnection")
@@ -153,7 +162,7 @@ class Database {
         return Optional.of(ResultSetWrapper(res, stmt, this))
       } else Optional.of(ResultSetWrapper(stmt.resultSet, stmt, this))
     } catch (e: SQLException) {
-      throw DatabaseException(e, stmtToSQL[stmt] ?: "<unknown>")
+      throw DatabaseException(e, stmtToSQL[stmt])
     }
   }
 
@@ -409,6 +418,9 @@ class Database {
     }
   }
 
+  /**
+   * A object specifying how to get latest timestamp, date, and time.
+   */
   object Current {
     /**
      * Get the current timestamp.
