@@ -27,7 +27,7 @@ Since this class only simplifies the general connection functions it does not im
 
 - MySQL
   - `compile 'mysql:mysql-connector-java:8.0.11'`
-  - `compile group: 'mysql", name: 'mysql-connector-java', version: '8.0.11'`
+  - `compile group: 'mysql', name: 'mysql-connector-java', version: '8.0.11'`
 - SQLite
   - `compile 'org.xerial:sqlite-jdbc:3.25.2'`
   - `compile group: "org.xerial", name: 'sqlite-jdbc', version: '3.25.2'`
