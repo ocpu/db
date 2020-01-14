@@ -1,6 +1,15 @@
 .gradle/
 .idea/
 build/
-out/
+**/out/
+.history/
+.settings/
+bin/
+src/main/old/
 
 *.iws
+.classpath
+.project
+*.sqlite*
+examples/src/CableSystem.kt
+info.md
