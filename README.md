@@ -37,12 +37,11 @@ This ORM library does not provide connection drivers that creates and upholds a 
 The following example demonstrates how to connect to a sqlite in memory database and how you can create some tables resembling something like twitter.
 
 ```kotlin
-import io.opencubes.sql.ISQLModelDriver
-import io.opencubes.sql.Database
+import io.opencubes.db.*
+import io.opencubes.db.sql.CurrentTimestamp
+import io.opencubes.db.sql.ISQLModelDriver
 
-fun generateSalt(): String = "(SALT)"
-
-class User() : Model() {
+class User() : Model {
   constructor(handle: String) : this() {
     this::handle.set(handle)
   }
@@ -52,21 +51,16 @@ class User() : Model() {
   var name by value<String?>().string { maxLength(128) }
   var email by value<String?>().string { maxLength(128) }
   var bio by value<String?>().string { maxLength(180) }
-  private val salt by value(::generateSalt).unique("password").string { maxLength(64) }
-  private var password by value<String>().unique("password").string { maxLength(64) }
+  private var password by value<String>().string { maxLength(64) }
 
   val following by referenceMany<User>()
   val followers by referenceMany(reverse = User::following)
-  val likedTweets by referenceMany(reverse = Tweet::likes)
-  val tweets by referenceMany(by = Tweet::author)
-
-  fun newPassword(newPassword: String) {
-    password = salt + newPassword
-  }
+  val upvotedPosts by referenceMany(reverse = Post::upvotes)
+  val posts by referenceMany(by = Post::author)
 }
 
-class Tweet() : Model() {
-  constructor(content: String, author: User, parent: Tweet? = null) : this() {
+class Post() : Model {
+  constructor(content: String, author: User, parent: Post? = null) : this() {
     this::content.set(content)
     this::author.set(author)
     this::parent.set(parent)
@@ -74,16 +68,16 @@ class Tweet() : Model() {
 
   val id by value<Int>().index.primary.autoIncrement
   val author by value<User>().index
-  val parent by value<Tweet?>().index.reference { deleteAction = ForeignKeyAction.SET_NULL }
+  val parent by value<Post?>().index.reference { deleteAction = ForeignKeyAction.SET_NULL }
   val content by value<String>().string { maxLength(180) }
   val created by value(CurrentTimestamp)
-  val retweet by value(false)
+  val repost by value(false)
 
-  val likes by referenceMany<User>()
+  val upvotes by referenceMany<User>()
   val tags by referenceMany<Tag>()
 }
 
-class Tag() : Model() {
+class Tag() : Model {
   constructor(text: String) : this() {
     this::text.set(text)
   }
@@ -91,7 +85,7 @@ class Tag() : Model() {
   val id by value<Int>().primary.autoIncrement
   val text by value<String>().unique.string { maxLength = 32 }
 
-  val tweets by referenceMany(reverse = Tweet::tags)
+  val posts by referenceMany(reverse = Post::tags)
 }
 
 fun main() {
@@ -114,34 +108,32 @@ CREATE TABLE `users` (
   `handle` TEXT NOT NULL,
   `name` TEXT DEFAULT NULL,
   `password` TEXT NOT NULL,
-  `salt` TEXT NOT NULL,
 
   CONSTRAINT `users_pk` PRIMARY KEY (`id`),
 
-  CONSTRAINT `users_ux_handle` UNIQUE (`handle`),
-  CONSTRAINT `users_ux_password` UNIQUE (`password`, `salt`)
+  CONSTRAINT `users_ux_handle` UNIQUE (`handle`)
 );
 
 CREATE INDEX `users_ix_id` ON `users` (`id`);
 CREATE INDEX `users_ix_handle` ON `users` (`handle`);
 
-CREATE TABLE `tweets` (
+CREATE TABLE `posts` (
   `id` INTEGER NOT NULL DEFAULT rowid,
   `author_id` INTEGER NOT NULL,
   `parent_id` INTEGER DEFAULT NULL,
   `content` TEXT NOT NULL,
   `created` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `retweet` INTEGER NOT NULL DEFAULT 0,
+  `repost` INTEGER NOT NULL DEFAULT 0,
 
-  CONSTRAINT `tweets_pk` PRIMARY KEY (`id`),
+  CONSTRAINT `posts_pk` PRIMARY KEY (`id`),
 
-  CONSTRAINT `tweets_fk_author_id` FOREIGN KEY (`author_id`) REFERENCES `users` (`id`),
-  CONSTRAINT `tweets_fk_parent_id` FOREIGN KEY (`parent_id`) REFERENCES `tweets` (`id`) ON DELETE SET NULL
+  CONSTRAINT `posts_fk_author_id` FOREIGN KEY (`author_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `posts_fk_parent_id` FOREIGN KEY (`parent_id`) REFERENCES `posts` (`id`) ON DELETE SET NULL
 );
 
-CREATE INDEX `tweets_ix_id` ON `tweets` (`id`);
-CREATE INDEX `tweets_ix_author_id` ON `tweets` (`author_id`);
-CREATE INDEX `tweets_ix_parent_id` ON `tweets` (`parent_id`);
+CREATE INDEX `posts_ix_id` ON `posts` (`id`);
+CREATE INDEX `posts_ix_author_id` ON `posts` (`author_id`);
+CREATE INDEX `posts_ix_parent_id` ON `posts` (`parent_id`);
 
 CREATE TABLE `tags` (
   `id` INTEGER NOT NULL DEFAULT rowid,
@@ -165,31 +157,31 @@ CREATE TABLE `following` (
 CREATE INDEX `following_ix_following_id` ON `following` (`following_id`);
 CREATE INDEX `following_ix_user_id` ON `following` (`user_id`);
 
-CREATE TABLE `likes` (
-  `tweet_id` INTEGER NOT NULL,
+CREATE TABLE `upvotes` (
+  `post_id` INTEGER NOT NULL,
   `user_id` INTEGER NOT NULL,
 
-  CONSTRAINT `likes_pk` PRIMARY KEY (`tweet_id`, `user_id`),
+  CONSTRAINT `upvotes_pk` PRIMARY KEY (`post_id`, `user_id`),
 
-  CONSTRAINT `likes_fk_tweet_id` FOREIGN KEY (`tweet_id`) REFERENCES `tweets` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `likes_fk_user_id` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  CONSTRAINT `upvotes_fk_post_id` FOREIGN KEY (`post_id`) REFERENCES `posts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `upvotes_fk_user_id` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 );
 
-CREATE INDEX `likes_ix_tweet_id` ON `likes` (`tweet_id`);
-CREATE INDEX `likes_ix_user_id` ON `likes` (`user_id`);
+CREATE INDEX `upvotes_ix_post_id` ON `upvotes` (`post_id`);
+CREATE INDEX `upvotes_ix_user_id` ON `upvotes` (`user_id`);
 
-CREATE TABLE `tag_tweets` (
+CREATE TABLE `post_tags` (
+  `post_id` INTEGER NOT NULL,
   `tag_id` INTEGER NOT NULL,
-  `tweet_id` INTEGER NOT NULL,
 
-  CONSTRAINT `tag_tweets_pk` PRIMARY KEY (`tag_id`, `tweet_id`),
+  CONSTRAINT `post_tags_pk` PRIMARY KEY (`post_id`, `tag_id`),
 
-  CONSTRAINT `tag_tweets_fk_tag_id` FOREIGN KEY (`tag_id`) REFERENCES `tags` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `tag_tweets_fk_tweet_id` FOREIGN KEY (`tweet_id`) REFERENCES `tweets` (`id`) ON DELETE CASCADE
+  CONSTRAINT `post_tags_fk_post_id` FOREIGN KEY (`post_id`) REFERENCES `posts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `post_tags_fk_tag_id` FOREIGN KEY (`tag_id`) REFERENCES `tags` (`id`) ON DELETE CASCADE
 );
 
-CREATE INDEX `tag_tweets_ix_tag_id` ON `tag_tweets` (`tag_id`);
-CREATE INDEX `tag_tweets_ix_tweet_id` ON `tag_tweets` (`tweet_id`);
+CREATE INDEX `post_tags_ix_post_id` ON `post_tags` (`post_id`);
+CREATE INDEX `post_tags_ix_tag_id` ON `post_tags` (`tag_id`);
 ```
 
 ### Generated tables in MySQL
@@ -202,40 +194,38 @@ CREATE TABLE `users` (
   `handle` VARCHAR(32) NOT NULL,
   `name` VARCHAR(128) DEFAULT NULL,
   `password` VARCHAR(64) NOT NULL,
-  `salt` VARCHAR(64) NOT NULL,
 
-  CONSTRAINT `users_pk` PRIMARY KEY (`id`),
+  CONSTRAINT `PRIMARY` PRIMARY KEY (`id`),
 
   CONSTRAINT `users_ux_handle` UNIQUE (`handle`),
-  CONSTRAINT `users_ux_password` UNIQUE (`password`, `salt`),
 
   INDEX `users_ix_id`(`id`),
   INDEX `users_ix_handle`(`handle`)
 );
 
-CREATE TABLE `tweets` (
+CREATE TABLE `posts` (
   `id` INTEGER NOT NULL AUTO_INCREMENT,
   `author_id` INTEGER NOT NULL,
   `parent_id` INTEGER DEFAULT NULL,
   `content` VARCHAR(180) NOT NULL,
   `created` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `retweet` BOOLEAN NOT NULL DEFAULT false,
+  `repost` BOOLEAN NOT NULL DEFAULT false,
 
-  CONSTRAINT `tweets_pk` PRIMARY KEY (`id`),
+  CONSTRAINT `PRIMARY` PRIMARY KEY (`id`),
 
-  INDEX `tweets_ix_id`(`id`),
-  INDEX `tweets_ix_author_id`(`author_id`),
-  INDEX `tweets_ix_parent_id`(`parent_id`),
+  INDEX `posts_ix_id`(`id`),
+  INDEX `posts_ix_author_id`(`author_id`),
+  INDEX `posts_ix_parent_id`(`parent_id`),
 
-  CONSTRAINT `tweets_fk_author_id` FOREIGN KEY (`author_id`) REFERENCES `users` (`id`),
-  CONSTRAINT `tweets_fk_parent_id` FOREIGN KEY (`parent_id`) REFERENCES `tweets` (`id`) ON DELETE SET NULL
+  CONSTRAINT `posts_fk_author_id` FOREIGN KEY (`author_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `posts_fk_parent_id` FOREIGN KEY (`parent_id`) REFERENCES `posts` (`id`) ON DELETE SET NULL
 );
 
 CREATE TABLE `tags` (
   `id` INTEGER NOT NULL AUTO_INCREMENT,
   `text` VARCHAR(32) NOT NULL,
 
-  CONSTRAINT `tags_pk` PRIMARY KEY (`id`),
+  CONSTRAINT `PRIMARY` PRIMARY KEY (`id`),
 
   CONSTRAINT `tags_ux_text` UNIQUE (`text`)
 );
@@ -244,7 +234,7 @@ CREATE TABLE `following` (
   `following_id` INTEGER NOT NULL,
   `user_id` INTEGER NOT NULL,
 
-  CONSTRAINT `following_pk` PRIMARY KEY (`following_id`, `user_id`),
+  CONSTRAINT `PRIMARY` PRIMARY KEY (`following_id`, `user_id`),
 
   INDEX `following_ix_following_id`(`following_id`),
   INDEX `following_ix_user_id`(`user_id`),
@@ -253,30 +243,30 @@ CREATE TABLE `following` (
   CONSTRAINT `following_fk_user_id` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 );
 
-CREATE TABLE `likes` (
-  `tweet_id` INTEGER NOT NULL,
+CREATE TABLE `upvotes` (
+  `post_id` INTEGER NOT NULL,
   `user_id` INTEGER NOT NULL,
 
-  CONSTRAINT `likes_pk` PRIMARY KEY (`tweet_id`, `user_id`),
+  CONSTRAINT `PRIMARY` PRIMARY KEY (`post_id`, `user_id`),
 
-  INDEX `likes_ix_tweet_id`(`tweet_id`),
-  INDEX `likes_ix_user_id`(`user_id`),
+  INDEX `upvotes_ix_post_id`(`post_id`),
+  INDEX `upvotes_ix_user_id`(`user_id`),
 
-  CONSTRAINT `likes_fk_tweet_id` FOREIGN KEY (`tweet_id`) REFERENCES `tweets` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `likes_fk_user_id` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  CONSTRAINT `upvotes_fk_post_id` FOREIGN KEY (`post_id`) REFERENCES `posts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `upvotes_fk_user_id` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 );
 
-CREATE TABLE `tag_tweets` (
+CREATE TABLE `post_tags` (
+  `post_id` INTEGER NOT NULL,
   `tag_id` INTEGER NOT NULL,
-  `tweet_id` INTEGER NOT NULL,
 
-  CONSTRAINT `tag_tweets_pk` PRIMARY KEY (`tag_id`, `tweet_id`),
+  CONSTRAINT `PRIMARY` PRIMARY KEY (`post_id`, `tag_id`),
 
-  INDEX `tag_tweets_ix_tag_id`(`tag_id`),
-  INDEX `tag_tweets_ix_tweet_id`(`tweet_id`),
+  INDEX `post_tags_ix_post_id`(`post_id`),
+  INDEX `post_tags_ix_tag_id`(`tag_id`),
 
-  CONSTRAINT `tag_tweets_fk_tag_id` FOREIGN KEY (`tag_id`) REFERENCES `tags` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `tag_tweets_fk_tweet_id` FOREIGN KEY (`tweet_id`) REFERENCES `tweets` (`id`) ON DELETE CASCADE
+  CONSTRAINT `post_tags_fk_post_id` FOREIGN KEY (`post_id`) REFERENCES `posts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `post_tags_fk_tag_id` FOREIGN KEY (`tag_id`) REFERENCES `tags` (`id`) ON DELETE CASCADE
 );
 ```
 
