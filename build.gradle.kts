@@ -73,11 +73,6 @@ dokka {
   outputDirectory = javadoc.destinationDir.toString()
 }
 
-signing {
-  useGpgCmd()
-  sign(publishing.publications[project.name])
-}
-
 publishing {
   publications {
     create<MavenPublication>(project.name) {
@@ -126,4 +121,9 @@ publishing {
       }
     }
   }
+}
+
+signing {
+  useGpgCmd()
+  sign(publishing.publications[project.name])
 }
