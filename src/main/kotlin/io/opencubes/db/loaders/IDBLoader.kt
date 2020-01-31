@@ -1,5 +1,6 @@
-package io.opencubes.db.sql
+package io.opencubes.db.loaders
 
+import io.opencubes.db.sql.ISQLModelDriver
 import java.sql.Driver
 import java.util.*
 

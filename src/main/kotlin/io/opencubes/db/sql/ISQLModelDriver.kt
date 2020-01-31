@@ -1,6 +1,7 @@
 package io.opencubes.db.sql
 
 import io.opencubes.db.ForeignKeyAction
+import io.opencubes.db.loaders.IDBLoader
 import io.opencubes.db.sql.select.*
 import io.opencubes.db.sql.table.SQLForeignKey
 import io.opencubes.db.sql.table.SQLTable
