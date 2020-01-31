@@ -7,6 +7,7 @@ import io.opencubes.db.sql.select.SelectPlaceholder
 import io.opencubes.db.sql.select.asSelectItem
 import io.opencubes.db.sql.table.*
 import io.opencubes.db.values.*
+import java.lang.reflect.Field
 import kotlin.reflect.KClass
 import kotlin.reflect.KProperty0
 import kotlin.reflect.KProperty1
@@ -218,7 +219,13 @@ interface Model {
     @JvmStatic
     fun obtainFields(model: Class<out Model>): List<ModelField> = fieldsCache.computeIfAbsent(model) {
       val empty = obtainEmpty(model)
-      model.declaredFields
+      val fields = mutableListOf<Field>()
+      var current: Class<*> = model
+      while (current.superclass != null) {
+        fields += current.declaredFields
+        current = current.superclass
+      }
+      fields
         .filter { it.type == ValueWrapper::class.java }
         .mapNotNull(ModelField.Companion::construct)
         .sortedBy { it.name }
