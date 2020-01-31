@@ -75,6 +75,9 @@ object Words {
   }
 }
 
+/**
+ * Escape a name for SQL
+ */
 val String.sqlEscape: String get() = '`' + this.removeSurrounding("`").removeSurrounding("\"") + '`'
 
 

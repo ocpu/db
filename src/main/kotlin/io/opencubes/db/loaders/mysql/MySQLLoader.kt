@@ -5,8 +5,11 @@ import io.opencubes.db.loaders.IDBLoader
 import io.opencubes.db.loaders.IDBLoader.Companion.driverLoader
 import io.opencubes.db.sql.UnsupportedDriver
 
+/**
+ * A basic MySQL database loader.
+ */
 class MySQLLoader : IDBLoader {
-  override val driver = driverLoader.find { it.acceptsURL("jdbc:mysql://") } ?: throw UnsupportedDriver("MySQL")
+  private val driver = driverLoader.find { it.acceptsURL("jdbc:mysql://") } ?: throw UnsupportedDriver("MySQL")
   override fun accepts(dsn: String, properties: Map<String, String>): Boolean = dsn.startsWith("mysql")
   override fun load(dsn: String, properties: Map<String, String>): IModelDriver =
     MySQLModelDriver(driver.connect("jdbc:" + dsn.removePrefix("jdbc:"), properties.toProperties()) ?: throw IllegalStateException("connection failed"))

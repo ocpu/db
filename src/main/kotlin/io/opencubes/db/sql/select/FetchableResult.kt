@@ -83,6 +83,9 @@ class FetchableResult(val resultSet: IResultSetWrapper) {
    */
   inline fun <reified T : Any> fetchAllInto() = fetchAllInto(T::class.java)
 
+  /**
+   * Iterate through all rows that are left.
+   */
   fun forEach(function: (resultSet: IResultSetWrapper) -> Unit) {
     resultSet.useIfPresent {
       for (res in it)
@@ -90,6 +93,9 @@ class FetchableResult(val resultSet: IResultSetWrapper) {
     }
   }
 
+  /**
+   * Transform the iterator into a [Sequence].
+   */
   fun asSequence(): Sequence<IResultSetWrapper> = resultSet.useIfPresent { it.asSequence() } ?: emptySequence()
 
   /**

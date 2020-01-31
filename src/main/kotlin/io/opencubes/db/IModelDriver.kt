@@ -158,9 +158,21 @@ interface IModelDriver {
    */
   fun prepare(sql: String): PreparedStatement
 
+  /**
+   * Start a select builder.
+   */
   fun select(vararg items: SelectItem) = SelectBuilder(this, items.toList())
+  /**
+   * Start a select builder.
+   */
   fun select(items: Collection<SelectItem>) = SelectBuilder(this, items)
+  /**
+   * Create a SQL select query with the specified information and execute it.
+   */
   fun executeSQL(items: Collection<SelectItem>, from: Pair<String, String>?, joins: List<Join>, conditions: List<WhereCondition>, orderings: List<Pair<SelectItem, Order?>>, groupings: List<SelectItem>, limit: Int?, offset: Int?, params: List<Any?>): FetchableResult
+  /**
+   * Create a SQL select query with the specified information.
+   */
   fun toSQL(items: Collection<SelectItem>, from: Pair<String, String>?, joins: List<Join>, conditions: List<WhereCondition>, orderings: List<Pair<SelectItem, Order?>>, groupings: List<SelectItem>, limit: Int?, offset: Int?): String
 
   /** Statics */

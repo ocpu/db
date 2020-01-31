@@ -312,6 +312,9 @@ interface Model {
     }
 
     private val nameCache = mutableMapOf<Class<out Model>, String>()
+    /**
+     * Get the table name of the model specified.
+     */
     @JvmStatic
     fun obtainTableName(model: Class<out Model>) = nameCache.computeIfAbsent(model) { obtainEmpty(it).table }
 

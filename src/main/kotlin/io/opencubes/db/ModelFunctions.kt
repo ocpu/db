@@ -53,6 +53,13 @@ inline fun <reified M : Model> Model.referenceMany(
   customToPropertyName: String? = null
 ) = referenceMany(M::class.java, customTableName, customFromPropertyName, customToPropertyName)
 
+/**
+ * Makes a string value stored as binary in the database.
+ * See https://dev.mysql.com/doc/refman/5.7/en/binary-varbinary.html
+ *
+ * @param maxLength The max length of the value.
+ * @param pad If the length of the input string is less than the [maxLength] pad the value with null.
+ */
 fun <T : String?> ValueWrapper<T>.binary(maxLength: Int, pad: Boolean = false): ValueWrapper<T> {
   preferences(ValueWrapperPreferences.String) {
     binary = true
@@ -62,6 +69,13 @@ fun <T : String?> ValueWrapper<T>.binary(maxLength: Int, pad: Boolean = false): 
   return this
 }
 
+/**
+ * Set the max length for the column value.
+ * See https://dev.mysql.com/doc/refman/5.7/en/char.html
+ *
+ * @param maxLength The max length of the value.
+ * @param pad If the length of the input string is less than the [maxLength] pad the value with space.
+ */
 fun <T : String?> ValueWrapper<T>.maxLength(maxLength: Int, pad: Boolean = false): ValueWrapper<T> {
   preferences(ValueWrapperPreferences.String) {
     binary = false
@@ -124,6 +138,12 @@ fun <T : Model?> ValueWrapper<T>.onChange(action: ForeignKeyAction): ValueWrappe
   return this
 }
 
+/**
+ * Ensures that the value wrapper preferences are of the specified type and a option to configure it as well.
+ *
+ * @param factory A value wrapper preference factory function that provides the correct type of preference.
+ * @param config A configuration function that takes the current value wrapper preference.
+ */
 inline fun <reified T : ValueWrapperPreferences> ValueWrapper<*>.preferences(factory: (ValueWrapper<*>) -> T, config: T.() -> Unit) {
   if (preferences is T) (preferences as T).config()
   else preferences(factory(this).apply(config))

@@ -14,20 +14,18 @@ import io.opencubes.db.values.ValueWrapper
 import io.opencubes.db.values.ValueWrapperPreferences
 import java.sql.*
 
-/**
- * @constructor
- * Create or use a SQLite database based on a filepath.
- *
- * @param filepath Where the SQLite file is located.
- * @property filepath Where this current SQLite model driver saves its data.
- */
-class SQLiteModelDriver(val filepath: String) : GenericSQLModelDriver() {
+/***/
+class SQLiteModelDriver(override val connection: Connection) : GenericSQLModelDriver() {
   /**
    * Create a in memory SQLite database.
    */
-  constructor() : this(":memory:")
+  constructor() : this(DriverManager.getConnection("jdbc:sqlite::memory:"))
 
-  override val connection: Connection = DriverManager.getConnection("jdbc:sqlite:$filepath")
+  /**
+   * Create or use a SQLite database based on a filepath.
+   * @param filepath Where the SQLite file is located.
+   */
+  constructor(filepath: String) : this(DriverManager.getConnection("jdbc:sqlite:$filepath"))
 
   override fun setParam(stmt: PreparedStatement, index: Int, param: Any?) {
     when (val o = if (param !is Enum<*>) param else getEnumName(param)) {
@@ -158,9 +156,6 @@ class SQLiteModelDriver(val filepath: String) : GenericSQLModelDriver() {
   override fun createClob(): Clob {
     TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
   }
-
-  /** builtin */
-  override fun toString(): String = "sqlite:$filepath"
 
   private class SQLiteResultWrapper(resultSet: ResultSet?, stmt: PreparedStatement, val driver: IModelDriver) : ResultSetWrapper(resultSet, stmt) {
     override fun get(columnName: String): Any? =
