@@ -38,8 +38,6 @@ The following example demonstrates how to connect to a sqlite in memory database
 
 ```kotlin
 import io.opencubes.db.*
-import io.opencubes.db.sql.CurrentTimestamp
-import io.opencubes.db.sql.ISQLModelDriver
 
 class User() : Model {
   constructor(handle: String) : this() {
@@ -90,7 +88,7 @@ class Tag() : Model {
 
 fun main() {
   // Make a SQLite in memory database and set it as the globally accessible one.
-  ISQLModelDriver.connect("sqlite::memory:").setGlobal()
+  IModelDriver.connect("sqlite::memory:").setGlobal()
 
   // Create the tables, connection tables and calculates any differences in the
   // database and if possible corrects them.
