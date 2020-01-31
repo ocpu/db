@@ -188,28 +188,6 @@ interface IModelDriver {
       }
       throw IllegalArgumentException("Cannot find a database loader for: $dsn")
     }
-//      try {
-//        driverLoader.find {
-//          try {
-//            it.accepts(dsn, info)
-//          } catch (e: Throwable) {
-//            false
-//          }
-//        }?.load(dsn, info)
-//          ?: throw IllegalArgumentException("Cannot find a database loader for: $dsn")
-//      } catch (e: ServiceConfigurationError) {
-//        if (e.cause is UnsupportedDriver)
-//          throw e.cause as UnsupportedDriver
-//        throw e
-//      }
-//    {
-//      val url = if (dsn.startsWith("jdbc:")) dsn.drop(5) else dsn
-//      return when {
-//        url.startsWith("sqlite:") -> SQLiteModelDriver(url.drop(7))
-////        url.startsWith("mysql:") -> MySQLModelDriver(url)
-//        else -> throw IllegalArgumentException("The protocol used is not supported '$url'")
-//      }
-//    }
 
     /**
      * @param dsn The URI to connect to.
