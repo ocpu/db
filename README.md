@@ -11,6 +11,8 @@ This is a database Object Relational Model (ORM) library for Kotlin. This ORM he
 
 This ORM library tries as much as possible to create database provider native solutions for all code that is generated in the background for your models.
 
+Versions can be found in the [releases tab](https://github.com/ocpu/db/releases)
+
 ## Models
 
 As briefly covered above the [Active Record pattern][wiki-ar] is used to provide models as classes, and have delegated properties describe columns and relations.
@@ -45,11 +47,11 @@ class User() : Model {
   }
 
   val id by value<Int>().index.primary.autoIncrement
-  val handle by value<String>().index.unique.string { maxLength(32) }
-  var name by value<String?>().string { maxLength(128) }
-  var email by value<String?>().string { maxLength(128) }
-  var bio by value<String?>().string { maxLength(180) }
-  private var password by value<String>().string { maxLength(64) }
+  val handle by value<String>().index.unique.maxLength(32)
+  var name by value<String?>().maxLength(128)
+  var email by value<String?>().maxLength(128)
+  var bio by value<String?>().maxLength(180)
+  private var password by value<String>().binary(64)
 
   val following by referenceMany<User>()
   val followers by referenceMany(reverse = User::following)
@@ -66,8 +68,8 @@ class Post() : Model {
 
   val id by value<Int>().index.primary.autoIncrement
   val author by value<User>().index
-  val parent by value<Post?>().index.reference { deleteAction = ForeignKeyAction.SET_NULL }
-  val content by value<String>().string { maxLength(180) }
+  val parent by value<Post?>().index.onDelete(ForeignKeyAction.SET_NULL)
+  val content by value<String>().maxLength(180)
   val created by value(CurrentTimestamp)
   val repost by value(false)
 
