@@ -1,7 +1,8 @@
-package io.opencubes.db.sql
+package io.opencubes.db
 
-import io.opencubes.db.ForeignKeyAction
 import io.opencubes.db.loaders.IDBLoader
+import io.opencubes.db.sql.IResultSetWrapper
+import io.opencubes.db.sql.UnsupportedDriver
 import io.opencubes.db.sql.select.*
 import io.opencubes.db.sql.table.SQLForeignKey
 import io.opencubes.db.sql.table.SQLTable
@@ -18,7 +19,7 @@ import java.util.function.Supplier
  * A generic interface for every kind of driver that connects to a database
  * and that can be used in a [Model].
  */
-interface ISQLModelDriver {
+interface IModelDriver {
   /**
    * Execute the provided [SQL][sql] with the [params] provided.
    */
@@ -115,9 +116,9 @@ interface ISQLModelDriver {
   fun correctTable(table: SQLTable): SQLTable
 
   /**
-   * Make this model driver the globally accessible from the [ISQLModelDriver.global] property.
+   * Make this model driver the globally accessible from the [IModelDriver.global] property.
    */
-  fun setGlobal(): ISQLModelDriver {
+  fun setGlobal(): IModelDriver {
     global = this
     return this
   }
@@ -165,13 +166,13 @@ interface ISQLModelDriver {
   /** Statics */
   companion object {
     /**
-     * The globally provided [ISQLModelDriver].
+     * The globally provided [IModelDriver].
      */
     @JvmStatic
-    var global: ISQLModelDriver? = null
+    var global: IModelDriver? = null
 
     private val driverLoader = ServiceLoader.load(IDBLoader::class.java)
-    private fun connect(dsn: String, info: Map<String, String>): ISQLModelDriver {
+    private fun connect(dsn: String, info: Map<String, String>): IModelDriver {
       val iterator = driverLoader.iterator()
       while (iterator.hasNext()) {
         val loader = try {
@@ -216,7 +217,7 @@ interface ISQLModelDriver {
      * @param password The password of the user to login as. (please read this from a file)
      */
     @JvmStatic
-    fun connect(dsn: String, user: String? = null, password: String? = null): ISQLModelDriver =
+    fun connect(dsn: String, user: String? = null, password: String? = null): IModelDriver =
       connect(dsn, mutableMapOf<String, String>().apply {
         if (user != null) put("user", user)
         if (password != null) put("password", password)

@@ -1,9 +1,12 @@
 package io.opencubes.db.loaders.sqlite
 
+import io.opencubes.db.IModelDriver
 import io.opencubes.db.Model
 import io.opencubes.db.getEnumName
 import io.opencubes.db.loaders.GenericSQLModelDriver
-import io.opencubes.db.sql.*
+import io.opencubes.db.sql.IResultSetWrapper
+import io.opencubes.db.sql.ResultSetWrapper
+import io.opencubes.db.sql.parseSQLToTables
 import io.opencubes.db.sql.table.SQLForeignKey
 import io.opencubes.db.sql.table.SQLTable
 import io.opencubes.db.sql.table.SQLTableProperty
@@ -159,7 +162,7 @@ class SQLiteModelDriver(val filepath: String) : GenericSQLModelDriver() {
   /** builtin */
   override fun toString(): String = "sqlite:$filepath"
 
-  private class SQLiteResultWrapper(resultSet: ResultSet?, stmt: PreparedStatement, val driver: ISQLModelDriver) : ResultSetWrapper(resultSet, stmt) {
+  private class SQLiteResultWrapper(resultSet: ResultSet?, stmt: PreparedStatement, val driver: IModelDriver) : ResultSetWrapper(resultSet, stmt) {
     override fun get(columnName: String): Any? =
       if (resultSet != null) {
         if (resultSet.isBeforeFirst)

@@ -1,13 +1,9 @@
 package io.opencubes.db.loaders.mysql
 
-import io.opencubes.db.ForeignKeyAction
-import io.opencubes.db.Model
-import io.opencubes.db.SerializedName
+import io.opencubes.db.*
 import io.opencubes.db.loaders.GenericSQLModelDriver
-import io.opencubes.db.sql.ISQLModelDriver
 import io.opencubes.db.sql.select.*
 import io.opencubes.db.sql.table.*
-import io.opencubes.db.sqlEscape
 import io.opencubes.db.values.ValueWrapper
 import io.opencubes.db.values.ValueWrapperPreferences
 import java.sql.*
@@ -71,12 +67,12 @@ class MySQLModelDriver(override val connection: Connection) : GenericSQLModelDri
   } to false
 
   override fun addProperty(existingTable: SQLTable, modelTable: SQLTable, property: SQLTableProperty): Pair<String, Boolean> {
-    val prop = ISQLModelDriver.propertyToSQL(property, getPropertyAddition(property))
+    val prop = IModelDriver.propertyToSQL(property, getPropertyAddition(property))
     return "ALTER TABLE `${existingTable.name}` ADD COLUMN $prop;" to false
   }
 
   override fun alterProperty(existingTable: SQLTable, modelTable: SQLTable, oldProperty: SQLTableProperty, newProperty: SQLTableProperty): Pair<String, Boolean> {
-    val property = ISQLModelDriver.propertyToSQL(newProperty, getPropertyAddition(newProperty))
+    val property = IModelDriver.propertyToSQL(newProperty, getPropertyAddition(newProperty))
     return "ALTER TABLE `${existingTable.name}` MODIFY COLUMN $property;" to false
   }
 

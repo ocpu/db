@@ -1,8 +1,8 @@
 package io.opencubes.db.sql.select
 
-import io.opencubes.db.sql.ISQLModelDriver
+import io.opencubes.db.IModelDriver
 
-class SelectBuilder(private val driver: ISQLModelDriver, val items: Collection<SelectItem>) {
+class SelectBuilder(private val driver: IModelDriver, val items: Collection<SelectItem>) {
   private var from: Pair<String, String>? = null
   fun from(table: String, alias: String = table): SelectBuilder {
     from = table to alias

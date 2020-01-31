@@ -2,7 +2,6 @@ package io.opencubes.db
 
 import io.opencubes.db.interfaces.IDatabaseList
 import io.opencubes.db.loaders.sqlite.SQLiteModelDriver
-import io.opencubes.db.sql.ISQLModelDriver
 import io.opencubes.db.sql.ISerializableDefault
 import io.opencubes.db.sql.select.SelectPlaceholder
 import io.opencubes.db.sql.select.asSelectItem
@@ -28,8 +27,8 @@ interface Model {
   /**
    * The model driver that the model uses.
    */
-  val driver: ISQLModelDriver
-    get() = ISQLModelDriver.global!!
+  val driver: IModelDriver
+    get() = IModelDriver.global!!
 
 
   /**
@@ -436,8 +435,8 @@ interface Model {
     /**
      * Sort tables by SQL driver.
      */
-    private fun tablesByDriver(tables: Array<out Class<out Model>>): Map<ISQLModelDriver, MutableList<Class<out Model>>> {
-      val tablesByDriver = mutableMapOf<ISQLModelDriver, MutableList<Class<out Model>>>()
+    private fun tablesByDriver(tables: Array<out Class<out Model>>): Map<IModelDriver, MutableList<Class<out Model>>> {
+      val tablesByDriver = mutableMapOf<IModelDriver, MutableList<Class<out Model>>>()
       for (clazz in setOf(*tables)) {
         val empty = obtainEmpty(clazz)
         tablesByDriver.computeIfAbsent(empty.driver) { mutableListOf() }.add(clazz)
@@ -478,7 +477,7 @@ interface Model {
      * @return A map that has the driver the table uses as the key to the migration DDL strings.
      */
     @JvmStatic
-    fun migrateDDL(vararg tables: Class<out Model>): Map<ISQLModelDriver, String> {
+    fun migrateDDL(vararg tables: Class<out Model>): Map<IModelDriver, String> {
       return tablesByDriver(tables).map { (driver, tables) ->
         driver to driver.migrateSQL(*tables.map(::obtainSQLTable).toTypedArray()).replace("-- separator", "")
       }.toMap()
@@ -507,7 +506,7 @@ interface Model {
      * @return A map that has the driver the table uses as the key to the tables DDL strings.
      */
     @JvmStatic
-    fun ddl(vararg tables: Class<out Model>): Map<ISQLModelDriver, String> {
+    fun ddl(vararg tables: Class<out Model>): Map<IModelDriver, String> {
       return tablesByDriver(tables).map { (driver, tables) ->
         driver to if (tables.isEmpty()) "" else tables
           .flatMap(::obtainSQLTable)

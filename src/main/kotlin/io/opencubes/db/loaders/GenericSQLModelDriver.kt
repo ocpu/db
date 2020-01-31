@@ -1,10 +1,10 @@
 package io.opencubes.db.loaders
 
+import io.opencubes.db.IModelDriver
 import io.opencubes.db.Model
 import io.opencubes.db.SimpleBlob
 import io.opencubes.db.sql.ConnectionException
 import io.opencubes.db.sql.IResultSetWrapper
-import io.opencubes.db.sql.ISQLModelDriver
 import io.opencubes.db.sql.ResultSetWrapper
 import io.opencubes.db.sql.select.*
 import io.opencubes.db.sql.table.SQLForeignKey
@@ -19,7 +19,7 @@ import java.util.function.Supplier
 /**
  * The basic representation of a SQL based model driver.
  */
-abstract class GenericSQLModelDriver : ISQLModelDriver {
+abstract class GenericSQLModelDriver : IModelDriver {
 
   /**
    * The connection this model driver has to the database.
@@ -333,12 +333,12 @@ abstract class GenericSQLModelDriver : ISQLModelDriver {
 
   override fun toSQL(table: SQLTable): String {
     val properties = table.properties.joinToString(",\n  ") {
-      ISQLModelDriver.propertyToSQL(it, getPropertyAddition(it))
+      IModelDriver.propertyToSQL(it, getPropertyAddition(it))
     }
 
     val foreignKeys =
       if (table.foreignKeys.isNotEmpty())
-        table.foreignKeys.joinToString(",\n  ", transform = ISQLModelDriver.Companion::foreignKeyToSQL)
+        table.foreignKeys.joinToString(",\n  ", transform = IModelDriver.Companion::foreignKeyToSQL)
       else ""
 
     val primaryKey =
@@ -500,7 +500,7 @@ abstract class GenericSQLModelDriver : ISQLModelDriver {
             checkNotNull(foreignKey.name) { "Foreign key does not have a name" }
 
             mods.append(
-              "ALTER TABLE `${modelTable.name}` ADD ${ISQLModelDriver.foreignKeyToSQL(foreignKey)};"
+              "ALTER TABLE `${modelTable.name}` ADD ${IModelDriver.foreignKeyToSQL(foreignKey)};"
             )
           }
 

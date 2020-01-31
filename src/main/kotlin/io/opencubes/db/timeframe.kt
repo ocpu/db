@@ -1,5 +1,6 @@
-package io.opencubes.db.sql
+package io.opencubes.db
 
+import io.opencubes.db.sql.ISerializableDefault
 import java.sql.Date
 import java.sql.Time
 import java.sql.Timestamp
