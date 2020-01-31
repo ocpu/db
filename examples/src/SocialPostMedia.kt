@@ -1,8 +1,6 @@
 @file:Suppress("SpellCheckingInspection", "unused", "DuplicatedCode")
 
 import io.opencubes.db.*
-import io.opencubes.db.sql.CurrentTimestamp
-import io.opencubes.db.sql.ISQLModelDriver
 
 object SocialPostMedia {
   fun generateSalt() = "(new salt)"
@@ -72,8 +70,8 @@ object SocialPostMedia {
 
   @JvmStatic
   fun main(args: Array<String>) {
-    ISQLModelDriver.connect("sqlite::memory:").setGlobal()
-//    ISQLModelDriver.connect("mysql://localhost/socialmedia", user = "ocpu", password = System.getenv("DB_PASS")).setGlobal()
+    IModelDriver.connect("sqlite::memory:").setGlobal()
+//    IModelDriver.connect("mysql://localhost/socialmedia", user = "ocpu", password = System.getenv("DB_PASS")).setGlobal()
     Model.migrate(User::class, Post::class, Tag::class)
 
     val alice = User("alice")

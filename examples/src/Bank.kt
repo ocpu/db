@@ -1,7 +1,4 @@
-import io.opencubes.db.Model
-import io.opencubes.db.referenceMany
-import io.opencubes.db.sql.ISQLModelDriver
-import io.opencubes.db.value
+import io.opencubes.db.*
 
 @Suppress("RemoveExplicitTypeArguments", "unused")
 object Bank {
@@ -59,8 +56,8 @@ object Bank {
 
   @JvmStatic
   fun main(args: Array<String>) {
-    ISQLModelDriver.connect("sqlite::memory:").setGlobal()
-//    ISQLModelDriver.connect("mysql://localhost/bank", user = "ocpu", password = System.getenv("DB_PASS")).setGlobal()
+    IModelDriver.connect("sqlite::memory:").setGlobal()
+//    IModelDriver.connect("mysql://localhost/bank", user = "ocpu", password = System.getenv("DB_PASS")).setGlobal()
     Model.migrate(User::class, Account::class, Transaction::class)
   }
 }
