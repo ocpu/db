@@ -40,7 +40,7 @@ class SQLiteModelDriver(val filepath: String) : GenericSQLModelDriver() {
   override fun getResultSet(resultSet: ResultSet?, stmt: PreparedStatement): IResultSetWrapper =
     SQLiteResultWrapper(resultSet, stmt, this)
 
-  override fun getSQLTypeFromClass(type: Class<*>, preferences: ValueWrapperPreferences<*>?): Pair<String, List<String>> {
+  override fun getSQLTypeFromClass(type: Class<*>, preferences: ValueWrapperPreferences?): Pair<String, List<String>> {
     return when {
       String::class.java.isAssignableFrom(type) -> "TEXT" to emptyList()
       Int::class.java.isAssignableFrom(type) || Integer::class.java.isAssignableFrom(type) -> "INTEGER" to emptyList()

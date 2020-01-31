@@ -50,7 +50,7 @@ interface IModelDriver {
    * @return A pair where the first is the sql type and the second are any
    *  type parameters.
    */
-  fun getSQLTypeFromClass(type: Class<*>, preferences: ValueWrapperPreferences<*>?): Pair<String, List<String>>
+  fun getSQLTypeFromClass(type: Class<*>, preferences: ValueWrapperPreferences?): Pair<String, List<String>>
 
   /**
    * Get all tables currently in the database.

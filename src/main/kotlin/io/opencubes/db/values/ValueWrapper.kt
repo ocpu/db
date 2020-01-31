@@ -4,7 +4,6 @@ import io.opencubes.db.interfaces.IReadWriteDelegate
 import io.opencubes.db.sql.ISerializableDefault
 import io.opencubes.db.IInjectable
 import io.opencubes.db.Model
-import io.opencubes.db.values.ValueWrapperPreferences.*
 import java.sql.Date
 import java.sql.Time
 import java.sql.Timestamp
@@ -15,7 +14,7 @@ import kotlin.reflect.KProperty
 class ValueWrapper<V : Any?>
 @Throws(IllegalArgumentException::class)
 constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IReadWriteDelegate<Model, V>, IInjectable {
-  var preferences: ValueWrapperPreferences<V>? = null
+  var preferences: ValueWrapperPreferences? = null
     private set
   var changed: Boolean = false
     private set
@@ -80,8 +79,7 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
   override fun set(value: V) = inject(value)
 
   override fun inject(value: Any?) {
-    if (preferences != null)
-      require(preferences!!.test(value as V)) { "Value passed is not a valid value" }
+    require(preferences?.test(value) != false) { "Value passed is not a valid value" }
     when {
       Model::class.java.isAssignableFrom(type) -> {
         when {
@@ -176,47 +174,7 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
     return this
   }
 
-  fun preferences(preferences: ValueWrapperPreferences<V>?) {
+  fun preferences(preferences: ValueWrapperPreferences?) {
     this.preferences = preferences
-  }
-
-  fun string(block: ValueWrapperPreferences.String.() -> Unit): ValueWrapper<V> {
-    string().block()
-    return this
-  }
-
-  fun string(): ValueWrapperPreferences.String {
-    check(type == String::class.java) { "Tried to receive string preferences when the type is not string" }
-    if (preferences == null)
-      preferences = String(nullable) as ValueWrapperPreferences<V>
-    return preferences as ValueWrapperPreferences.String
-  }
-
-  fun number(block: ValueWrapperPreferences.Number.() -> Unit): ValueWrapper<V> {
-    number().block()
-    return this
-  }
-
-  fun number(): ValueWrapperPreferences.Number {
-    check(Number::class.java.isAssignableFrom(type)) {
-      "Tried to receive number preferences when the type is not number"
-    }
-    if (preferences == null)
-      preferences = ValueWrapperPreferences.Number() as ValueWrapperPreferences<V>
-    return preferences as ValueWrapperPreferences.Number
-  }
-
-  fun reference(block: Reference.() -> Unit): ValueWrapper<V> {
-    reference().block()
-    return this
-  }
-
-  fun reference(): Reference {
-    check(Model::class.java.isAssignableFrom(type)) {
-      "Tried to receive reference preferences when the type is not a model"
-    }
-    if (preferences == null)
-      preferences = Reference(type as Class<out Model>, nullable) as ValueWrapperPreferences<V>
-    return preferences as Reference
   }
 }

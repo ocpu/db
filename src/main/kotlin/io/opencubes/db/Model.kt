@@ -364,14 +364,14 @@ interface Model {
               pref.column ?: obtainId(otherModel).name
             else obtainId(otherModel).name
 
-          val preferences = value.reference()
+          val preferences = value.preferences as? ValueWrapperPreferences.Reference
 
           foreignKeys += SQLForeignKey(
             "${empty.table}_fk_${it.name}",
             listOf(it.name),
             SQLTableReference(otherEmpty.table, listOf(otherId)),
-            preferences.deleteAction,
-            preferences.changeAction
+            preferences?.deleteAction ?: ForeignKeyAction.NO_ACTION,
+            preferences?.changeAction ?: ForeignKeyAction.NO_ACTION
           )
         }
       }

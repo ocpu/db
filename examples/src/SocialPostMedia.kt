@@ -3,7 +3,6 @@
 import io.opencubes.db.*
 
 object SocialPostMedia {
-  fun generateSalt() = "(new salt)"
 
   class User() : Model {
     constructor(handle: String) : this() {
@@ -11,11 +10,11 @@ object SocialPostMedia {
     }
 
     val id by value<Int>().index.primary.autoIncrement
-    val handle by value<String>().index.unique.string { maxLength(32) }
-    var name by value<String?>().string { maxLength(128) }
-    var email by value<String?>().string { maxLength(128) }
-    var bio by value<String?>().string { maxLength(180) }
-    private var password by value<String>().string { maxLength(64) }
+    val handle by value<String>().index.unique.maxLength(32)
+    var name by value<String?>().maxLength(128)
+    var email by value<String?>().maxLength(128)
+    var bio by value<String?>().maxLength(180)
+    private var password by value<String>().binary(64)
 
     val following by referenceMany<User>()
     val followers by referenceMany(reverse = User::following)
@@ -38,8 +37,8 @@ object SocialPostMedia {
 
     val id by value<Int>().index.primary.autoIncrement
     val author by value<User>().index
-    val parent by value<Post?>().index.reference { deleteAction = ForeignKeyAction.SET_NULL }
-    val content by value<String>().string { maxLength(180) }
+    val parent by value<Post?>().index.onDelete(ForeignKeyAction.SET_NULL)
+    val content by value<String>().maxLength(180)
     val created by value(CurrentTimestamp)
     val repost by value(false)
 
@@ -53,7 +52,7 @@ object SocialPostMedia {
     }
 
     val id by value<Int>().primary.autoIncrement
-    val text by value<String>().unique.string { maxLength = 32 }
+    val text by value<String>().unique.maxLength(32)
 
     val posts by referenceMany(reverse = Post::tags)
   }

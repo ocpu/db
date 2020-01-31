@@ -80,7 +80,7 @@ class MySQLModelDriver(override val connection: Connection) : GenericSQLModelDri
     return "ALTER TABLE `${existingTable.name}` DROP COLUMN `${property.name}`;" to false
   }
 
-  override fun getSQLTypeFromClass(type: Class<*>, preferences: ValueWrapperPreferences<*>?): Pair<String, List<String>> {
+  override fun getSQLTypeFromClass(type: Class<*>, preferences: ValueWrapperPreferences?): Pair<String, List<String>> {
     return when {
       preferences is ValueWrapperPreferences.Number && preferences.type != ValueWrapperPreferences.Number.Type.DYNAMIC -> {
         return when (preferences.type) {
@@ -89,10 +89,19 @@ class MySQLModelDriver(override val connection: Connection) : GenericSQLModelDri
         }
       }
       String::class.java.isAssignableFrom(type) -> if (preferences is ValueWrapperPreferences.String) {
-        if (preferences.maxLength > 0)
-          "VARCHAR" to listOf("${preferences.maxLength}")
-        else
-          "MEDIUMTEXT" to emptyList()
+        when {
+          preferences.maxLength > 0 -> {
+            when {
+              preferences.binary && preferences.pad -> "BINARY"
+              preferences.binary && !preferences.pad -> "VARBINARY"
+              !preferences.binary && preferences.pad -> "CHAR"
+              !preferences.binary && !preferences.pad -> "VARCHAR"
+              else -> throw IllegalStateException("impossible")
+            } to listOf("${preferences.maxLength}")
+          }
+          preferences.binary -> throw IllegalStateException("Cannot specify that a column should be binary when no max length is specified.")
+          else -> "MEDIUMTEXT" to emptyList()
+        }
       } else "MEDIUMTEXT" to emptyList()
       Int::class.java.isAssignableFrom(type) || Integer::class.java.isAssignableFrom(type) -> "INTEGER" to emptyList()
       Long::class.java.isAssignableFrom(type) || java.lang.Long::class.java.isAssignableFrom(type) -> "BIGINT" to emptyList()

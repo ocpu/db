@@ -9,7 +9,7 @@ object Bank {
 
   class Account : Model {
     val id by value<Int>().primary.autoIncrement
-    val name by value<String>().string { maxLength = 64 }
+    val name by value<String>().maxLength(64)
     var balance by value<Double>(0.0)
 
     val owners by referenceMany<User>()
