@@ -28,10 +28,10 @@ class SQLiteModelDriver(override val connection: Connection) : GenericSQLModelDr
   constructor(filepath: String) : this(DriverManager.getConnection("jdbc:sqlite:$filepath"))
 
   override fun setParam(stmt: PreparedStatement, index: Int, param: Any?) {
-    when (val o = if (param !is Enum<*>) param else getEnumName(param)) {
-      is Blob -> stmt.setBytes(index, o.getBytes(1, o.length().toInt()))
-      is Enum<*> -> stmt.setInt(index, o.ordinal)
-      else -> stmt.setObject(index, o)
+    when (param) {
+      is Blob -> stmt.setBytes(index, param.getBytes(1, param.length().toInt()))
+      is Enum<*> -> stmt.setInt(index, param.ordinal)
+      else -> stmt.setObject(index, param)
     }
   }
 
