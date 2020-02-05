@@ -4,7 +4,7 @@ import io.opencubes.db.*
 object Bank {
   class User : Model {
     val id by value<Int>().primary.autoIncrement
-    val username by value<String>().unique
+    val username by value<String>().unique.maxLength(64)
   }
 
   class Account : Model {

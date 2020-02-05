@@ -438,7 +438,7 @@ interface Model {
     private fun checkIndex(model: Model, field: ModelField, type: String) {
       check(type != "MEDIUMTEXT") {
         val property = "${model::class.java.simpleName}::${field.backendField.name.replace("\$delegate", "")}"
-        "Unable to index $property without a max length. With .string { maxLength = X }"
+        "Unable to index $property without a max length. With .maxLength(X)"
       }
     }
 

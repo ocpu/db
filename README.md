@@ -83,7 +83,7 @@ class Tag() : Model {
   }
 
   val id by value<Int>().primary.autoIncrement
-  val text by value<String>().unique.string { maxLength = 32 }
+  val text by value<String>().unique.maxLength(32)
 
   val posts by referenceMany(reverse = Post::tags)
 }
