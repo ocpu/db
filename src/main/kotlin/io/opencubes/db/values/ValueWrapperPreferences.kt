@@ -88,12 +88,21 @@ interface ValueWrapperPreferences : Predicate<Any?> {
 
   class Reference(val refType: Class<out Model>, val nullable: Boolean) : ValueWrapperPreferences {
     override fun test(value: Any?): Boolean {
-      require(value is Model?)
-      if (value == null) {
-        check(nullable) { "Tried to set a not nullable reference to null" }
-        return true
+      if (value is Model?) {
+        if (value == null) {
+          check(nullable) { "Tried to set a not nullable reference to null" }
+          return true
+        }
+        return refType.isInstance(value)
+      } else {
+        try {
+          val valueWrapper = Model.obtainId(refType).value(Model.obtainEmpty(refType))
+          if (value == null) return valueWrapper.nullable
+          return valueWrapper.type.isInstance(value) || valueWrapper.type.isAssignableFrom(value::class.java)
+        } catch (_: IllegalStateException) {
+          return false
+        }
       }
-      return refType.isInstance(value)
     }
 
     @Deprecated("Use the column function on a value instead")
