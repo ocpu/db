@@ -18,7 +18,7 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
     private set
   var changed: Boolean = false
     private set
-  private var value: V? = getDefaultValue()
+  private var value: V? = null
   private var tempValue: Any? = null
   private var retrieved = false
   private val modelSQL by lazy {
@@ -34,6 +34,8 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
   var isAutoIncrement = false
   var indexGroups: MutableList<String?>? = null
   var uniqueIndexGroups: MutableList<String?>? = null
+
+  private var calledDefault = false
 
   private fun getDefaultValue(): V? {
     return when {
@@ -53,6 +55,10 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
 
   @Throws(IllegalStateException::class, IllegalArgumentException::class)
   override fun get(): V {
+    if (!calledDefault) {
+      value = getDefaultValue()
+      calledDefault = true
+    }
     if (Model::class.java.isAssignableFrom(type) && !retrieved) {
       val model = type as Class<out Model>
       val empty = Model.obtainEmpty(model)
@@ -79,6 +85,7 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
   override fun set(value: V) = inject(value)
 
   override fun inject(value: Any?) {
+    calledDefault = true
     require(preferences?.test(value) != false) { "Value passed is not a valid value" }
     when {
       Model::class.java.isAssignableFrom(type) -> {
