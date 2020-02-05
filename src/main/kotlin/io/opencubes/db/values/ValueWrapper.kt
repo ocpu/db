@@ -85,7 +85,9 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
 
   override fun inject(value: Any?) {
     calledDefault = true
-    require(preferences?.test(value) != false) { "Value passed is not a valid value" }
+    require(preferences?.test(value) != false) {
+      "Value passed is not a valid value for the current preferences ${preferences!!::class.java.simpleName}"
+    }
     when {
       Model::class.java.isAssignableFrom(type) -> {
         when (value) {
