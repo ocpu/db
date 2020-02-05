@@ -8,7 +8,6 @@ import java.sql.Date
 import java.sql.Time
 import java.sql.Timestamp
 import java.util.function.Supplier
-import kotlin.reflect.KProperty
 
 @Suppress("UNCHECKED_CAST")
 class ValueWrapper<V : Any?>
@@ -89,21 +88,21 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
     require(preferences?.test(value) != false) { "Value passed is not a valid value" }
     when {
       Model::class.java.isAssignableFrom(type) -> {
-        when {
-          value is Int -> {
+        when (value) {
+          is Int -> {
             tempValue = value
             this.value = null
             retrieved = false
             changed = true
           }
-          value == null -> {
+          null -> {
             check(nullable) { "Cannot assign null to a not nullable value" }
             tempValue = null
             this.value = null
             retrieved = true
             changed = true
           }
-          value is Model -> {
+          is Model -> {
             val model = value::class.java as Class<out Model>
             val id = Model.obtainId(model)
             val modelValue = id.value(value).value
@@ -128,9 +127,6 @@ constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IRea
       }
     }
   }
-
-  override fun getValue(thisRef: Model, property: KProperty<*>): V = get()
-  override fun setValue(thisRef: Model, property: KProperty<*>, value: V) = set(value)
 
   /**
    * Set the auto increment flag on this property/column.
