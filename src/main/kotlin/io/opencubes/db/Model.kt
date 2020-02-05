@@ -3,6 +3,7 @@ package io.opencubes.db
 import io.opencubes.db.interfaces.IDatabaseList
 import io.opencubes.db.loaders.sqlite.SQLiteModelDriver
 import io.opencubes.db.sql.ISerializableDefault
+import io.opencubes.db.sql.select.SelectItem
 import io.opencubes.db.sql.select.SelectPlaceholder
 import io.opencubes.db.sql.select.asSelectItem
 import io.opencubes.db.sql.table.*
@@ -150,9 +151,14 @@ interface Model {
       .filter { it.hasValue(this) }
     val valueFields = obtainFields(this::class.java).filter { it.hasValue(this) }.toMutableList()
     if (unchangedIdFields.isNotEmpty()) {
+      val res = driver
+        .select(SelectItem("*", null, null, false))
+        .from(table)
+        .where(unchangedIdFields.map { it.name.asSelectItem() to SelectPlaceholder })
+        .execute(unchangedIdFields.map { it.getActual(this) })
       // Update row
-      valueFields.removeAll(unchangedIdFields)
-      try {
+      if (res.hasResult) try {
+        valueFields.removeAll(unchangedIdFields)
         driver.update(
           table = table,
           columns = valueFields.map(ModelField::name),
