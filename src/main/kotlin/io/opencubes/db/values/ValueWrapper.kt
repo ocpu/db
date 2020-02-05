@@ -12,7 +12,7 @@ import java.util.function.Supplier
 @Suppress("UNCHECKED_CAST")
 class ValueWrapper<V : Any?>
 @Throws(IllegalArgumentException::class)
-constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IReadWriteDelegate<Model, V>, IInjectable {
+constructor(val type: Class<V>, val nullable: Boolean, val default: Any?) : IReadWriteDelegate<Any?, V>, IInjectable {
   var preferences: ValueWrapperPreferences? = null
     private set
   var changed: Boolean = false
