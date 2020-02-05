@@ -161,7 +161,7 @@ class MySQLModelDriver(override val connection: Connection) : GenericSQLModelDri
         if (index < items.size - 1)
           append(", ")
       }
-      checkNotNull(from)
+      checkNotNull(from) { "Cannot select anything from a null table" }
       append(" FROM ${from.first.sqlEscape}")
       if (from.second != from.first)
         append(" AS ${from.second.sqlEscape}")
