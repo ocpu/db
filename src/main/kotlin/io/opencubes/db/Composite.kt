@@ -80,23 +80,64 @@ interface Composite {
     override fun inject(value: Any?) = this.value.inject(value)
   }
 
+  /**
+   * A general link between two tables.
+   * @property tableColumn The name of the column to match to the other table.
+   * @property otherTable The name of the other table.
+   * @property otherTableColumn The name of the other table column to match to.
+   * @property type The type of join that will be performed.
+   */
   data class CompositeLink(val tableColumn: String, val otherTable: String, val otherTableColumn: String, val type: Type = Type.INNER) {
+    /**
+     * All types of joins that are possible.
+     */
     enum class Type {
-      INNER, LEFT
+      /**
+       * Join the two tables where all the values exists in both rows.
+       */
+      INNER,
+      /**
+       * Join the two tables and get all rows from the left table and the matched ones from the right.
+       */
+      LEFT
     }
   }
 
+  /**
+   * The general case for all composite fields.
+   */
   interface CompositeField<T> : IReadOnlyDelegate<Composite, T>, IInjectable {
+    /**
+     * The model class that this filed primarily uses to get the value.
+     */
     val modelClass: Class<out Model>?
+
+    /**
+     * The name of the table that has the field value.
+     */
     val table: String? get() = null
+
+    /**
+     * The select item that instructs how to get the value from the query.
+     */
     fun item(tableName: String, alias: String): SelectItem
+
+    /**
+     * Any additional contributions to the query.
+     */
     fun contribute(builder: SelectBuilder, links: List<Pair<String, Set<CompositeLink>>>) = Unit
+
+    /**
+     * Any additional joins this value contributes to the select query.
+     *
+     * @param links The current links that will be used to get all relevant values.
+     */
     fun contributeLinks(links: MutableList<Pair<String, MutableSet<CompositeLink>>>) = Unit
   }
 
   companion object {
     private fun fetchCompositeRows(compositeClass: Class<out Composite>, filters: Array<out Pair<KProperty1<out Composite, *>, *>>, add: SelectBuilder.() -> Unit = {}): FetchableResult {
-      // TODO Cache results
+      // TODO Cache value resolution effects
       val composite = compositeClass.newInstance()
       // Get all composite fields for query
       val fields = composite::class.java.declaredFields
