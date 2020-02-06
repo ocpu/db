@@ -71,17 +71,54 @@ abstract class GenericSQLModelDriver : IModelDriver {
   }
 
   @Suppress("UNCHECKED_CAST")
-  override fun executeSQL(items: Collection<SelectItem>, from: Pair<String, String>?, joins: List<Join>, conditions: List<WhereCondition>, orderings: List<Pair<SelectItem, Order?>>, groupings: List<SelectItem>, limit: Int?, offset: Int?, params: List<Any?>): FetchableResult {
-    return FetchableResult(execute(buildString {
-      fun append(item: SelectItem) {
-        if (!item.simple) check(item.`as` != null) { "Complex SelectItem did not provide a alias" }
-        append(
-          item.`as`?.sqlEscape ?:
-          if (item.table != null) "${item.table.sqlEscape}.${item.column.sqlEscape}"
-          else item.column.sqlEscape
-        )
-      }
+  final override fun executeSQL(items: Collection<SelectItem>,
+                                from: Pair<String, String>?,
+                                joins: List<Join>,
+                                conditions: List<WhereCondition>,
+                                orderings: List<Pair<SelectItem, Order?>>,
+                                groupings: List<SelectItem>,
+                                limit: Int?,
+                                offset: Int?,
+                                params: List<Any?>): FetchableResult {
+    val (sql, indexesToRemove) = getSQL(items, from, joins, conditions, orderings, groupings, limit, offset, params)
+    return FetchableResult(execute(sql, *params.toMutableList().apply {
+      for (index in indexesToRemove)
+        removeAt(index)
+    }.toTypedArray()))
+  }
 
+  final override fun toSQL(
+    items: Collection<SelectItem>,
+    from: Pair<String, String>?,
+    joins: List<Join>,
+    conditions: List<WhereCondition>,
+    orderings: List<Pair<SelectItem, Order?>>,
+    groupings: List<SelectItem>,
+    limit: Int?,
+    offset: Int?
+  ): String = getSQL(items, from, joins, conditions, orderings, groupings, limit, offset).first
+
+  /**
+   * Generate the a SQL select query based on the parameters provided.
+   *
+   * @param items These are the items that are left in the result of the query
+   * @param from A pair of with the first item is the actual table name and them the alias for the table. The two values
+   * can be the same value and if null it was not specified.
+   * @param joins This is a list of connections to make to other tables to resolve the query items.
+   * @param conditions This is a list of conditions for the query to follow. The conditions can describe a value or one
+   * of the two combining key words AND or OR.
+   * @param orderings This is a list describing how the results should be ordered.
+   * @param groupings This is a list of what items that can be grouped together to form aggregates.
+   * @param limit The maximum amount of items that should be returned.
+   * @param offset From all the results start from this offset when returning results.
+   * @param params All the params that will fill in all [SelectPlaceholder] items.
+   * @return A pair of values that has the first item as the generated SQL and the second as a list of indexes from the
+   * [params] to remove before executing.
+   */
+  @Suppress("UNCHECKED_CAST")
+  protected open fun getSQL(items: Collection<SelectItem>, from: Pair<String, String>?, joins: List<Join>, conditions: List<WhereCondition>, orderings: List<Pair<SelectItem, Order?>>, groupings: List<SelectItem>, limit: Int?, offset: Int?, params: List<Any?> = listOf()): Pair<String, List<Int>> {
+    val indexesToRemove = mutableListOf<Int>()
+    val sql = buildString {
       append("SELECT ")
       for ((index, item) in items.withIndex()) {
         if (item.simple) {
@@ -111,7 +148,7 @@ abstract class GenericSQLModelDriver : IModelDriver {
         }
         append("${join.table.sqlEscape} ")
         if (join.alias != join.table)
-          append("${join.alias.sqlEscape} ")
+          append("AS ${join.alias.sqlEscape} ")
         val table = join.alias.sqlEscape
         append("ON ")
         for (condition in join.conditions) {
@@ -135,18 +172,21 @@ abstract class GenericSQLModelDriver : IModelDriver {
           WhereAndCondition -> append(" AND ")
           is Condition -> {
             append(condition.item)
-            append(" IS ")
             when (val value = condition.value) {
               SelectPlaceholder -> {
-                append('?')
+                if (placeholders < params.size && params[placeholders] == null) {
+                  append(" IS NULL")
+                  indexesToRemove += placeholders
+                } else append(" = ?")
                 placeholders++
               }
-              is String -> append("'$value'")
-              is Number -> append("$value")
+              is String -> append(" = '$value'")
+              is Number -> append(" = $value")
               is Model -> when (val id = Model.obtainId(value::class.java as Class<out Model>).getActual(value)) {
-                is String -> append("'$id'")
-                is Number -> append("$id")
+                is String -> append(" = '$id'")
+                is Number -> append(" = $id")
               }
+              null -> append(" IS NULL")
               else -> append(" = $value")
             }
           }
@@ -177,131 +217,9 @@ abstract class GenericSQLModelDriver : IModelDriver {
 
       if (offset != null)
         append(" OFFSET $offset")
-
-      check(placeholders == params.size) {
-        if (placeholders < params.size)
-          "Too many params for query. Placeholders: $placeholders, params: ${params.size}"
-        else
-          "Too few params for query. Placeholders: $placeholders, params: ${params.size}"
-      }
-    }, *params.toTypedArray()))
-  }
-
-  @Suppress("UNCHECKED_CAST")
-  override fun toSQL(items: Collection<SelectItem>, from: Pair<String, String>?, joins: List<Join>, conditions: List<WhereCondition>, orderings: List<Pair<SelectItem, Order?>>, groupings: List<SelectItem>, limit: Int?, offset: Int?): String {
-    return buildString {
-      fun append(item: SelectItem) {
-        if (!item.simple) check(item.`as` != null) { "Complex SelectItem did not provide a alias" }
-        append(
-          item.`as`?.sqlEscape ?:
-          if (item.table != null) "${item.table.sqlEscape}.${item.column.sqlEscape}"
-          else item.column.sqlEscape
-        )
-      }
-
-      append("SELECT ")
-      for ((index, item) in items.withIndex()) {
-        if (item.simple) {
-          if (item.table != null)
-            append("${item.table.sqlEscape}.")
-          append(item.column.sqlEscape)
-          if (item.`as` != null)
-            append(" AS ${item.`as`.sqlEscape}")
-        } else {
-          append(item.column)
-          if (item.`as` != null)
-            append(" AS ${item.`as`.sqlEscape}")
-        }
-
-        if (index < items.size - 1)
-          append(", ")
-      }
-      checkNotNull(from)
-      append(" FROM ${from.first.sqlEscape}")
-      if (from.second != from.first)
-        append(" AS ${from.second.sqlEscape}")
-
-      for (join in joins) {
-        when (join) {
-          is InnerJoin -> append(" INNER JOIN ")
-          is LeftJoin -> append(" LEFT JOIN ")
-        }
-        append("${join.table.sqlEscape} ")
-        if (join.alias != join.table)
-          append("${join.alias.sqlEscape} ")
-        val table = join.alias.sqlEscape
-        append("ON ")
-        for (condition in join.conditions) {
-          when (condition) {
-            JoinAndCondition -> append(" AND ")
-            JoinOrCondition -> append(" OR ")
-            is JoinCondition -> {
-              append("$table.${condition.column.sqlEscape} = ")
-              append("${condition.other.table!!.sqlEscape}.${condition.other.column.sqlEscape}")
-            }
-          }
-        }
-      }
-
-      if (conditions.isNotEmpty())
-        append("WHERE ")
-      var placeholders = 0
-      for (condition in conditions) {
-        when (condition) {
-          WhereOrCondition -> append(" OR ")
-          WhereAndCondition -> append(" AND ")
-          is Condition -> {
-            append(condition.item)
-            append(" IS ")
-            when (val value = condition.value) {
-              SelectPlaceholder -> {
-                append('?')
-                placeholders++
-              }
-              is String -> append("'$value'")
-              is Number -> append("$value")
-              is Model -> when (val id = Model.obtainId(value::class.java as Class<out Model>).getActual(value)) {
-                is String -> append("'$id'")
-                is Number -> append("$id")
-              }
-              else -> append(" = $value")
-            }
-          }
-        }
-      }
-
-      if (orderings.isNotEmpty())
-        append(" ORDER BY ")
-      for ((index, ordering) in orderings.withIndex()) {
-        val (item, order) = ordering
-        append(item)
-        if (order != null)
-          append(" ${order.name}")
-        if (index < orderings.lastIndex)
-          append(", ")
-      }
-
-      if (groupings.isNotEmpty())
-        append(" GROUP BY ")
-      for ((index, item) in groupings.withIndex()) {
-        append(item)
-        if (index < groupings.lastIndex)
-          append(", ")
-      }
-
-      if (limit != null)
-        append(" LIMIT $limit")
-
-      if (offset != null)
-        append(" OFFSET $offset")
-
-//      check(placeholders == params.size) {
-//        if (placeholders < params.size)
-//          "Too many params for query. Placeholders: $placeholders, params: ${params.size}"
-//        else
-//          "Too few params for query. Placeholders: $placeholders, params: ${params.size}"
-//      }
     }
+
+    return sql to indexesToRemove.apply { sortDescending() }
   }
 
   final override fun <R> transaction(transaction: Supplier<R>): R {
